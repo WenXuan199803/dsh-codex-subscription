@@ -3,4 +3,4 @@
 # persistent web configuration untouched.
 - insert:
     - id: codex-subscription
-      name: 'dsh-codex-subscription'
+      name: 'dsh-codex-subscription-sssv4'
