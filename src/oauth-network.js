@@ -113,6 +113,33 @@ function bodyBytes(body) {
   throw new TypeError('Unsupported Codex OAuth request body')
 }
 
+/** Preserve socket failures without turning a caller cancellation into a retry. */
+export function proxyResponseBody(response, signal) {
+  const reader = Readable.toWeb(response).getReader()
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const next = await reader.read()
+        if (next.done) {
+          controller.close()
+          reader.releaseLock()
+        } else controller.enqueue(next.value)
+      } catch (error) {
+        const code = error?.code
+        const reset = code === 'ECONNRESET' || code === 'ERR_STREAM_PREMATURE_CLOSE'
+        controller.error(!signal?.aborted && reset
+          ? new Error(`Codex response stream connection closed (${code})`, { cause: error })
+          : error)
+        reader.releaseLock()
+      }
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason) }
+      finally { reader.releaseLock() }
+    },
+  })
+}
+
 export function fetchThroughProxy(input, init, proxyUrl) {
   const target = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
   const body = bodyBytes(init?.body)
@@ -132,7 +159,7 @@ export function fetchThroughProxy(input, init, proxyUrl) {
       }
       const status = response.statusCode ?? 500
       const empty = init?.method === 'HEAD' || [204, 205, 304].includes(status)
-      resolve(new Response(empty ? null : Readable.toWeb(response), {
+      resolve(new Response(empty ? null : proxyResponseBody(response, init?.signal), {
         status,
         statusText: response.statusMessage,
         headers: responseHeaders,
