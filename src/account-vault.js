@@ -115,7 +115,7 @@ function assertVaultRecord(record) {
   return {
     version: VERSION,
     activeId: record.payload.activeId,
-    legacyAccountId,
+    ...(legacyAccountId === undefined ? {} : { legacyAccountId }),
     accounts,
     scheduler: normalizeScheduler(record.payload.scheduler),
   }
@@ -479,12 +479,13 @@ export class DshOAuthAccountVault {
         if (!current.accounts.some(account => account.id === id)) throw new Error('Unknown Codex account')
         if (current.accounts.length === 1) throw new Error('Cannot remove the last account; sign out instead')
         const accounts = current.accounts.filter(account => account.id !== id)
-        return {
+        const next = {
           ...current,
           activeId: current.activeId === id ? accounts[0].id : current.activeId,
-          legacyAccountId: current.legacyAccountId === id ? undefined : current.legacyAccountId,
           accounts,
         }
+        if (current.legacyAccountId === id) delete next.legacyAccountId
+        return next
       })
     })
   }
