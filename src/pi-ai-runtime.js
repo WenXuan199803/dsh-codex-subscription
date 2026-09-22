@@ -35,6 +35,8 @@ export function openaiCodexSubscriptionProvider({
   resolveOutputVerbosity = () => OUTPUT_VERBOSITY_DEFAULT,
   resolveContextMode = () => undefined,
   resolveCustomContextWindow = () => undefined,
+  resolveTransport = () => undefined,
+  resolveSessionId = sessionId => sessionId,
   catalog,
   runNetwork = (_area, operation) => operation(),
 } = {}) {
@@ -60,8 +62,12 @@ export function openaiCodexSubscriptionProvider({
     const fast = resolveSpeedMode() === SPEED_MODE_FAST
       && (metadata?.supportsFast ?? supportsCodexFastMode(model?.id))
     const onPayload = options.onPayload
+    const transport = resolveTransport()
+    const sessionId = resolveSessionId(options.sessionId)
     return {
       ...options,
+      ...(transport === undefined ? {} : { transport }),
+      ...(sessionId === undefined ? {} : { sessionId }),
       ...(textVerbosity === undefined ? {} : { textVerbosity }),
       ...(fast ? { serviceTier: FAST_SERVICE_TIER } : {}),
       async onPayload(payload, requestModel) {
