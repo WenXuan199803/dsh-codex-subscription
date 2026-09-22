@@ -137,6 +137,12 @@ export function apply(ctx) {
     resolveSpeedMode: () => settings.get()[SPEED_MODE_FIELD],
     resolveOutputVerbosity: () => normalizeOutputVerbosity(settings.get()[OUTPUT_VERBOSITY_FIELD]),
     resolveContextMode: () => normalizeContextMode(settings.get()[CONTEXT_MODE_FIELD]),
+    resolveTransport: () => 'auto',
+    resolveSessionId: sessionId => {
+      const accountId = store.currentAccountId()
+      if (typeof sessionId !== 'string' || sessionId.length === 0 || typeof accountId !== 'string' || accountId.length === 0) return sessionId
+      return `${sessionId}:account:${accountId}`
+    },
     resolveCustomContextWindow: modelKey => {
       const overrides = readCapabilitySettings(settings.get())[CUSTOM_CONTEXT_OVERRIDES_FIELD]
       if (Object.hasOwn(overrides, modelKey)) return overrides[modelKey]
@@ -190,9 +196,9 @@ export function apply(ctx) {
     // pi-ai owns prompt_cache_key and encrypted reasoning replay. The explicit
     // profile values make the subscription cache contract auditable.
     cacheRetention: 'short',
-    // DSH rc.6 resolves pi-ai 0.82.x, whose cached WebSocket pool is keyed by
-    // session only. SSE avoids cross-account connection reuse after sign-out.
-    transport: 'sse',
+    // pi-ai's Codex route is WebSocket-first. Account-scoped session IDs above
+    // prevent its session cache from reusing a socket across different OAuth accounts.
+    transport: 'auto',
   })
   let profileKey
   let profileSnapshot
