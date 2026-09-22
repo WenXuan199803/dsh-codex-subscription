@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-subscription-sssv4",
-  "version": "2.1.13",
+  "version": "2.1.14",
   "packageManager": "pnpm@11.19.0",
   "description": "Use ChatGPT and Codex subscriptions in DeepSeek Harness with OAuth, quota, safe resets, web search, images, and Fast mode",
   "type": "module",
@@ -132,6 +132,7 @@
     "@deepseek-ai/dsh-home-paths": "0.1.1-rc.2"
   },
   "dependencies": {
-    "https-proxy-agent": "7.0.6"
+    "https-proxy-agent": "7.0.6",
+    "ws": "8.21.3"
   }
 }
