@@ -5,6 +5,8 @@ const statuses = new Set(['ok', 'failed'])
 const stages = new Set(['transport', 'http'])
 const codes = new Set(['timeout', 'dns', 'tls', 'connection', 'network', 'http-error'])
 const routes = new Set(['direct', 'environment', 'system', 'bypass'])
+const transports = new Set(['websocket', 'sse'])
+const fallbacks = new Set(['websocket-to-sse'])
 const elapsedBuckets = new Set(['under-1s', '1-5s', '5-15s', 'over-15s'])
 
 function safeRequests(network) {
@@ -19,6 +21,8 @@ function safeRequests(network) {
       ...(codes.has(value.code) ? { code: value.code } : {}),
       ...(Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? { httpStatus: value.httpStatus } : {}),
       route: value.route,
+      ...(transports.has(value.transport) ? { transport: value.transport } : {}),
+      ...(fallbacks.has(value.fallback) ? { fallback: value.fallback } : {}),
       elapsed: value.elapsed,
     }
   }
