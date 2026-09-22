@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/materialize-sssv4.yml'
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'tsdown.config.mjs'
 
 permissions:
   contents: write
