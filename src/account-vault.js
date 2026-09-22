@@ -86,6 +86,9 @@ function assertVaultRecord(record) {
       id: account.id,
       label: normalizeLabel(account.label),
       credential: sanitizeOAuthCredential(account.credential),
+      enabled: account.enabled !== false,
+      priority: normalizePriority(account.priority),
+      weight: normalizeWeight(account.weight),
     }
   })
   if (!ids.has(record.payload.activeId)) throw new Error('Codex account vault active account is missing')
@@ -98,6 +101,7 @@ function assertVaultRecord(record) {
     activeId: record.payload.activeId,
     legacyAccountId,
     accounts,
+    scheduler: normalizeScheduler(record.payload.scheduler),
   }
 }
 
@@ -181,7 +185,8 @@ export class DshOAuthAccountVault {
         version: VERSION,
         activeId: id,
         legacyAccountId: id,
-        accounts: [{ id, label: DEFAULT_LABEL, credential: legacy.credential }],
+        accounts: [{ id, label: DEFAULT_LABEL, credential: legacy.credential, enabled: true, priority: 0, weight: 1 }],
+        scheduler: normalizeScheduler(),
       }))
     })
     return assertVaultRecord(created)
@@ -221,6 +226,9 @@ export class DshOAuthAccountVault {
         id: account.id,
         label: account.label,
         active: account.id === payload.activeId,
+        enabled: account.enabled !== false,
+        priority: normalizePriority(account.priority),
+        weight: normalizeWeight(account.weight),
         expiresAt: account.credential.expires,
         ...(account.credential.email === undefined ? {} : { email: account.credential.email }),
       }))
@@ -231,6 +239,52 @@ export class DshOAuthAccountVault {
     return this.#enqueue(async () => {
       const payload = await this.#ensurePayload()
       return clone(payload?.accounts.find(account => account.id === payload.activeId)?.credential)
+    })
+  }
+
+  read(id) {
+    return this.#enqueue(async () => {
+      const payload = await this.#ensurePayload()
+      return clone(payload?.accounts.find(account => account.id === id)?.credential)
+    })
+  }
+
+  scheduler() {
+    return this.#enqueue(async () => normalizeScheduler((await this.#ensurePayload())?.scheduler))
+  }
+
+  updateScheduler(patch = {}) {
+    return this.#enqueue(async () => {
+      const strategy = patch.strategy
+      const sessionAffinity = patch.sessionAffinity
+      if (strategy !== undefined && !SCHEDULER_STRATEGIES.has(strategy)) throw new Error('Unsupported Codex scheduling strategy')
+      if (sessionAffinity !== undefined && typeof sessionAffinity !== 'boolean') throw new Error('Invalid Codex session affinity setting')
+      const payload = await this.#modifyPayload(current => ({
+        ...current,
+        scheduler: normalizeScheduler({ ...current.scheduler, ...patch }),
+      }))
+      return normalizeScheduler(payload.scheduler)
+    })
+  }
+
+  configure(id, patch = {}) {
+    return this.#enqueue(async () => {
+      if (patch.enabled !== undefined && typeof patch.enabled !== 'boolean') throw new Error('Invalid Codex account enabled state')
+      if (patch.priority !== undefined && normalizePriority(patch.priority) !== patch.priority) throw new Error('Invalid Codex account priority')
+      if (patch.weight !== undefined && normalizeWeight(patch.weight) !== patch.weight) throw new Error('Invalid Codex account weight')
+      await this.#modifyPayload(current => {
+        const index = current.accounts.findIndex(account => account.id === id)
+        if (index < 0) throw new Error('Unknown Codex account')
+        const accounts = [...current.accounts]
+        accounts[index] = {
+          ...accounts[index],
+          ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
+          ...(patch.priority === undefined ? {} : { priority: patch.priority }),
+          ...(patch.weight === undefined ? {} : { weight: patch.weight }),
+        }
+        return { ...current, accounts }
+      })
+      return this.list()
     })
   }
 
@@ -247,7 +301,7 @@ export class DshOAuthAccountVault {
       const payload = await this.#modifyPayload(current => ({
         ...current,
         activeId: id,
-        accounts: [...current.accounts, { id, label: normalizedLabel, credential: validated }],
+        accounts: [...current.accounts, { id, label: normalizedLabel, credential: validated, enabled: true, priority: 0, weight: 1 }],
       }))
       const account = payload.accounts.find(candidate => candidate.id === id)
       return {
@@ -257,6 +311,37 @@ export class DshOAuthAccountVault {
         expiresAt: account.credential.expires,
         ...(account.credential.email === undefined ? {} : { email: account.credential.email }),
       }
+    })
+  }
+
+  importMany(entries) {
+    return this.#enqueue(async () => {
+      if (!Array.isArray(entries) || entries.length === 0) throw new Error('No Codex accounts to import')
+      await this.#ensurePayload()
+      let added = 0
+      let duplicates = 0
+      const payload = await this.#modifyPayload(current => {
+        const refreshTokens = new Set(current.accounts.map(account => account.credential.refresh))
+        const accessTokens = new Set(current.accounts.map(account => account.credential.access))
+        const accounts = [...current.accounts]
+        for (const entry of entries) {
+          const credential = sanitizeOAuthCredential(entry?.credential)
+          if (refreshTokens.has(credential.refresh) || accessTokens.has(credential.access)) {
+            duplicates += 1
+            continue
+          }
+          const id = this.createId()
+          const fallback = credential.email ?? `Account ${accounts.length + 1}`
+          const label = normalizeLabel(entry?.label ?? fallback)
+          accounts.push({ id, label, credential, enabled: true, priority: 0, weight: 1 })
+          refreshTokens.add(credential.refresh)
+          accessTokens.add(credential.access)
+          added += 1
+        }
+        if (added === 0) return current
+        return { ...current, activeId: current.activeId || accounts[0].id, accounts }
+      })
+      return { added, duplicates, total: payload.accounts.length }
     })
   }
 
