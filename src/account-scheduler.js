@@ -4,10 +4,17 @@ const RETRYABLE_STATUS = new Set([401, 403, 408, 429, 500, 502, 503, 504, 520, 5
 
 function resetDelayFromMessage(message) {
   if (typeof message !== 'string') return undefined
-  const match = /resets_in_seconds[^0-9]{0,12}(\d+)/iu.exec(message)
-  if (!match) return undefined
-  const seconds = Number(match[1])
-  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined
+  const relative = /resets_in_seconds[^0-9]{0,12}(\d+)/iu.exec(message)
+  if (relative) {
+    const seconds = Number(relative[1])
+    if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000
+  }
+  const absolute = /resets_at[^0-9]{0,12}(\d{10,13})/iu.exec(message)
+  if (!absolute) return undefined
+  const value = Number(absolute[1])
+  if (!Number.isFinite(value) || value <= 0) return undefined
+  const milliseconds = value < 10_000_000_000 ? value * 1000 : value
+  return Math.max(1_000, milliseconds - Date.now())
 }
 
 function classifyFailure(failure = {}) {
@@ -38,17 +45,18 @@ const isCommittedChunk = chunk => [
   'block-start', 'block-end', 'text-delta', 'reasoning-delta', 'tool-call-delta',
 ].includes(chunk?.type)
 
+const attemptSummary = attempts => attempts.map(item => `${item.label}: ${item.reason}`).join('；')
+
 function enhancedFailure(chunk, attempts) {
   if (chunk?.type !== 'finish' || !['error', 'aborted'].includes(chunk.reason?.kind) || attempts.length === 0) return chunk
   const failure = chunk.reason.failure ?? { code: 'CODEX_ACCOUNT_POOL_FAILED', message: 'Codex account pool failed' }
-  const summary = attempts.map(item => `${item.label}: ${item.reason}`).join('；')
   return {
     ...chunk,
     reason: {
       ...chunk.reason,
       failure: {
         ...failure,
-        message: `${failure.message}（账号接力：${summary}）`,
+        message: `${failure.message}（账号接力：${attemptSummary(attempts)}）`,
       },
     },
   }
@@ -107,15 +115,16 @@ export class CodexAccountScheduler {
       && !excluded.has(account.id)
       && !this.cooldowns.has(account.id))
     if (enabled.length === 0) return undefined
-    const highest = Math.max(...enabled.map(account => account.priority ?? 0))
-    const pool = enabled.filter(account => (account.priority ?? 0) === highest)
+
     const key = sessionId === undefined ? undefined : String(sessionId)
     if (config.sessionAffinity && key) {
       const bound = this.bindings.get(key)
-      const hit = pool.find(account => account.id === bound)
+      const hit = enabled.find(account => account.id === bound)
       if (hit) return hit
     }
 
+    const highest = Math.max(...enabled.map(account => account.priority ?? 0))
+    const pool = enabled.filter(account => (account.priority ?? 0) === highest)
     let selected
     if (config.strategy === 'round-robin') {
       selected = pool[this.cursor % pool.length]
@@ -196,9 +205,8 @@ export class ScheduledCodexAdapter extends LlmAdapter {
 
   async *run(options, dispatch) {
     const accounts = await this.scheduler.accounts()
-    if (accounts.length <= 1) {
-      yield* dispatch(options)
-      return
+    if (accounts.length === 0) {
+      throw new LlmError('没有可用的 Codex 账号：请先登录或导入账号', 'CODEX_ACCOUNT_POOL_UNAVAILABLE')
     }
 
     const excluded = new Set()
@@ -265,7 +273,13 @@ export class ScheduledCodexAdapter extends LlmAdapter {
       yield enhancedFailure(lastFailureChunk, attempts)
       return
     }
-    if (lastError) throw lastError
+    if (lastError) {
+      const message = lastError instanceof Error ? lastError.message : String(lastError)
+      throw new LlmError(
+        `${message}（账号接力：${attemptSummary(attempts)}）`,
+        typeof lastError?.code === 'string' && lastError.code.length > 0 ? lastError.code : 'CODEX_ACCOUNT_POOL_FAILED',
+      )
+    }
     throw new LlmError(
       '没有可用的 Codex 账号：账号可能已停用、额度耗尽或正在冷却',
       'CODEX_ACCOUNT_POOL_UNAVAILABLE',
