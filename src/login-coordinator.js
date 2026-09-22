@@ -1,3 +1,4 @@
+import { parseAccountImport } from './account-import.js'
 import { assertCodexAuthUrl } from './external-url.js'
 
 const LOGIN_METHODS = new Set(['browser', 'device_code'])
@@ -68,6 +69,8 @@ export class CodexLoginCoordinator {
   constructor(auth, options = {}) {
     this.auth = auth
     this.createId = options.createId ?? (() => crypto.randomUUID())
+    this.accountVault = options.accountVault
+    this.scheduler = options.scheduler
   }
 
   async accountStatus(options) {
@@ -289,6 +292,34 @@ export class CodexLoginCoordinator {
   async removeAccount(id) {
     return publicClone(await this.auth.remove(id))
   }
+
+  async importAccounts(input) {
+    if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
+    const entries = parseAccountImport(input)
+    const result = await this.accountVault.importMany(entries)
+    return { ...result, account: await this.accountStatus() }
+  }
+
+  async configureAccount(id, patch) {
+    if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
+    await this.accountVault.configure(id, patch)
+    return this.accountStatus()
+  }
+
+  async schedulerStatus() {
+    if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
+    return {
+      config: await this.accountVault.scheduler(),
+      accounts: await this.accountVault.list(),
+      runtime: this.scheduler?.snapshot?.() ?? { bindings: 0, cooldowns: [] },
+    }
+  }
+
+  async updateScheduler(patch) {
+    if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
+    await this.accountVault.updateScheduler(patch)
+    return this.schedulerStatus()
+  }
 }
 
 /** Map the loopback-only DSH Connection channel onto the coordinator. */
@@ -327,6 +358,17 @@ export function createCodexRpcHandler(coordinator, options = {}) {
       if (endpoint === 'logout') return ok(await coordinator.logout({ signal }))
       if (endpoint === 'account/select') return ok(await coordinator.selectAccount(input.id))
       if (endpoint === 'account/remove') return ok(await coordinator.removeAccount(input.id))
+      if (endpoint === 'account/import') return ok(await coordinator.importAccounts({ name: input.name, encoded: input.encoded }))
+      if (endpoint === 'account/configure') return ok(await coordinator.configureAccount(input.id, {
+        ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+        ...(input.priority === undefined ? {} : { priority: input.priority }),
+        ...(input.weight === undefined ? {} : { weight: input.weight }),
+      }))
+      if (endpoint === 'scheduler/status') return ok(await coordinator.schedulerStatus())
+      if (endpoint === 'scheduler/update') return ok(await coordinator.updateScheduler({
+        ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
+        ...(input.sessionAffinity === undefined ? {} : { sessionAffinity: input.sessionAffinity }),
+      }))
       return badRequest(`unknown Codex auth endpoint: ${endpoint}`)
     } catch (error) {
       if (signal.aborted) throw error
