@@ -222,7 +222,7 @@ function createScopedWebSocketConstructor(WebSocketImpl = WebSocket) {
       this.codexThreadId = this.codexSessionId
       this.codexWindowId = this.codexSessionId === undefined ? undefined : `${this.codexThreadId}:0`
 
-      if (isCodex) {
+      if (isCodex && typeof this.addEventListener === 'function') {
         this.addEventListener('message', event => {
           const info = safeModelEvent(event?.data)
           if (info !== undefined) networkScope.getStore()?.options?.onModelEvent?.(info)
