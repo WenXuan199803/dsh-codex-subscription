@@ -126,7 +126,7 @@ test('DSH PiAiAdapter can execute the OAuth-only Codex provider with a refreshed
     assert.equal(text, 'ok')
     assert.equal(request.url, 'https://chatgpt.com/backend-api/codex/responses')
     assert.equal(request.headers.get('chatgpt-account-id'), 'account-dsh')
-    assert.ok(networkAreas.length > 0)
+    assert.equal(networkAreas.length, 1, 'a model stream should enter the network scope only once, not once per chunk')
     assert.deepEqual(new Set(networkAreas), new Set(['model']))
   } finally {
     globalThis.fetch = previousFetch
