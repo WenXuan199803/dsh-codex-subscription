@@ -355,3 +355,39 @@ test('context presets preserve catalog defaults and cap every supported model in
   perModel.set('gpt-5.4-mini', 200_000)
   assert.equal(contexts()['gpt-5.4-mini'], 200_000)
 })
+
+
+test('subscription transport can scope Codex session identity per account while preserving SSE fallback tests', async () => {
+  const previousFetch = globalThis.fetch
+  let request
+  globalThis.fetch = async (_input, init) => {
+    request = { headers: new Headers(init.headers) }
+    return new Response(sse([
+      { type: 'response.created', response: { id: 'resp_scoped' } },
+      { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_scoped', role: 'assistant', content: [] } },
+      { type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: 'ok' },
+      { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_scoped', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'ok', annotations: [] }] } },
+      { type: 'response.done', response: { id: 'resp_scoped', status: 'completed', output: [], usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } },
+    ]), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+
+  try {
+    const provider = openaiCodexSubscriptionProvider({
+      resolveTransport: () => 'sse',
+      resolveSessionId: sessionId => `${sessionId}:account:local-b`,
+    })
+    const model = provider.getModels().find(model => model.id === 'gpt-5.6-sol')
+    assert.ok(model)
+    for await (const _event of provider.streamSimple(model, {
+      systemPrompt: '',
+      messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
+    }, {
+      apiKey: jwt('account-b'),
+      sessionId: 'session-1',
+    })) {}
+
+    assert.equal(request.headers.get('session-id'), 'session-1:account:local-b')
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
