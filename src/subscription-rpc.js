@@ -151,7 +151,7 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, resetCr
       await usageReader.clear()
       resetCreditService.clear()
       modelCatalog?.clear()
-    } else if (result.ok === true && (endpoint === 'account/select' || endpoint === 'account/remove'
+    } else if (result.ok === true && (['account/select', 'account/remove', 'account/import', 'account/configure'].includes(endpoint)
       || (endpoint === 'login/status' && result.value?.authenticated === true))) {
       usageReader.clearCache()
       resetCreditService.clear()
