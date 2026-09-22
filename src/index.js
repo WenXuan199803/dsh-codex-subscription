@@ -123,8 +123,9 @@ export function apply(ctx) {
     baseModels: () => baseProvider.getModels(),
     fetch: (input, init) => network.fetch('catalog', input, init),
   })
+  const forceFast = process.env.CODEX_FORCE_FAST === '1'
   const provider = openaiCodexSubscriptionProvider({
-    resolveSpeedMode: () => settings.get()[SPEED_MODE_FIELD],
+    resolveSpeedMode: () => forceFast ? 'fast' : settings.get()[SPEED_MODE_FIELD],
     resolveOutputVerbosity: () => normalizeOutputVerbosity(settings.get()[OUTPUT_VERBOSITY_FIELD]),
     resolveContextMode: () => normalizeContextMode(settings.get()[CONTEXT_MODE_FIELD]),
     resolveCustomContextWindow: modelKey => {
@@ -145,7 +146,7 @@ export function apply(ctx) {
         settings.get()[LEGACY_QUICK_QUOTA_FIELD],
       ),
       [SEARCH_PROVIDER_FIELD]: settings.get()[SEARCH_PROVIDER_FIELD],
-      [SPEED_MODE_FIELD]: settings.get()[SPEED_MODE_FIELD],
+      [SPEED_MODE_FIELD]: forceFast ? 'fast' : settings.get()[SPEED_MODE_FIELD],
       [OUTPUT_VERBOSITY_FIELD]: normalizeOutputVerbosity(settings.get()[OUTPUT_VERBOSITY_FIELD]),
       [CONTEXT_MODE_FIELD]: normalizeContextMode(settings.get()[CONTEXT_MODE_FIELD]),
       [CUSTOM_CONTEXT_WINDOW_FIELD]: normalizeCustomContextWindow(settings.get()[CUSTOM_CONTEXT_WINDOW_FIELD]),
