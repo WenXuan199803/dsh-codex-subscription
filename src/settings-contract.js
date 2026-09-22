@@ -21,6 +21,13 @@ export const ACCOUNT_ROUTING_MODE_FIELD = 'accountRoutingMode'
 export const ACCOUNT_ROUTING_MODE_SCHEDULER = 'scheduler'
 export const ACCOUNT_ROUTING_MODE_NATIVE = 'native'
 export const DEFAULT_ACCOUNT_ROUTING_MODE = ACCOUNT_ROUTING_MODE_SCHEDULER
+export const SCHEDULER_STRATEGY_FIELD = 'accountSchedulerStrategy'
+export const SCHEDULER_STRATEGY_FILL_FIRST = 'fill-first'
+export const SCHEDULER_STRATEGY_ROUND_ROBIN = 'round-robin'
+export const SCHEDULER_STRATEGY_WEIGHTED_ROUND_ROBIN = 'weighted-round-robin'
+export const DEFAULT_SCHEDULER_STRATEGY = SCHEDULER_STRATEGY_FILL_FIRST
+export const SCHEDULER_SESSION_AFFINITY_FIELD = 'accountSchedulerSessionAffinity'
+export const DEFAULT_SCHEDULER_SESSION_AFFINITY = true
 export const OUTPUT_VERBOSITY_FIELD = 'outputVerbosity'
 export const OUTPUT_VERBOSITY_DEFAULT = 'default'
 export const OUTPUT_VERBOSITY_LOW = 'low'
@@ -78,6 +85,12 @@ export const normalizeSpeedMode = value => [SPEED_MODE_STANDARD, SPEED_MODE_FAST
 export const normalizeAccountRoutingMode = value => [ACCOUNT_ROUTING_MODE_SCHEDULER, ACCOUNT_ROUTING_MODE_NATIVE].includes(value)
   ? value
   : DEFAULT_ACCOUNT_ROUTING_MODE
+
+export const normalizeSchedulerStrategy = value => [
+  SCHEDULER_STRATEGY_FILL_FIRST,
+  SCHEDULER_STRATEGY_ROUND_ROBIN,
+  SCHEDULER_STRATEGY_WEIGHTED_ROUND_ROBIN,
+].includes(value) ? value : DEFAULT_SCHEDULER_STRATEGY
 
 export const normalizeContextMode = value => [CONTEXT_MODE_STANDARD, CONTEXT_MODE_EXTENDED, CONTEXT_MODE_CUSTOM].includes(value)
   ? value
