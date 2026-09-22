@@ -55,6 +55,7 @@ export class DshOAuthCredentialStore {
     this.legacyRefs = Object.freeze([...legacyRefs])
     this.expirySkewMs = expirySkewMs
     this.vault = options.vault
+    this.fallbackAccountId = options.fallbackAccountId ?? (() => undefined)
   }
 
   #enqueue(providerId, operation, options) {
@@ -78,7 +79,7 @@ export class DshOAuthCredentialStore {
     assertProvider(providerId)
     abortIfNeeded(options)
     if (this.vault !== undefined) {
-      const scopedAccount = this.#requestAccount.getStore()
+      const scopedAccount = this.#requestAccount.getStore() ?? this.fallbackAccountId()
       const current = scopedAccount === undefined
         ? await this.vault.readActive()
         : await this.vault.read(scopedAccount)
@@ -118,7 +119,7 @@ export class DshOAuthCredentialStore {
   modify(providerId, update, options) {
     return this.#enqueue(providerId, async () => {
       if (this.vault !== undefined) {
-        const scopedAccount = this.#requestAccount.getStore()
+        const scopedAccount = this.#requestAccount.getStore() ?? this.fallbackAccountId()
         const modify = scopedAccount === undefined
           ? operation => this.vault.modifyActive(operation)
           : operation => this.vault.modify(scopedAccount, operation)
