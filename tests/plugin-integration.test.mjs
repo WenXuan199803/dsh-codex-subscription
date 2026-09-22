@@ -235,6 +235,7 @@ test('plugin registers one Codex route, subscription image tool, and DSH-trusted
   assert.equal('CODEX_PROVIDER_POLICY' in plugin, false, 'do not replace the removed boundary with cosmetic metadata')
   assert.deepEqual(host.registered.map(item => item.providers), [['openai-codex']])
   const profile = host.registered[0].adapter.current().profiles.get('openai-codex')
+  assert.equal(profile.transport, 'auto')
   assert.deepEqual({
     maxRequestImageBytes: profile.maxRequestImageBytes,
     requestImagePixelBudget: profile.requestImagePixelBudget,
