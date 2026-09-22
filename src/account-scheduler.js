@@ -66,6 +66,7 @@ export class CodexAccountScheduler {
   constructor(vault, options = {}) {
     this.vault = vault
     this.now = options.now ?? Date.now
+    this.resolveConfig = options.resolveConfig
     this.cooldowns = new Map()
     this.bindings = new Map()
     this.cursor = 0
@@ -74,7 +75,7 @@ export class CodexAccountScheduler {
   }
 
   async config() {
-    return this.vault?.scheduler?.() ?? { strategy: 'fill-first', sessionAffinity: true }
+    return await this.resolveConfig?.() ?? this.vault?.scheduler?.() ?? { strategy: 'fill-first', sessionAffinity: true }
   }
 
   async accounts() {
