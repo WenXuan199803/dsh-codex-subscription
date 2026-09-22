@@ -52,7 +52,10 @@ function credentialFromObject(raw) {
   }
   if (expires === undefined) expires = Date.now() + 5 * 60 * 1000
 
-  const email = text(pick('email')) ?? text(decodeJwtPayload(access)?.['https://api.openai.com/profile']?.email)
+  const payload = decodeJwtPayload(access)
+  const email = text(pick('email')) ?? text(payload?.['https://api.openai.com/profile']?.email)
+  const accountId = text(pick('account_id', 'accountId', 'chatgpt_account_id', 'chatgptAccountId'))
+    ?? text(payload?.['https://api.openai.com/auth']?.chatgpt_account_id)
   const label = text(pick('label', 'name', 'account_name', 'accountName')) ?? email
   return {
     label,
@@ -62,6 +65,7 @@ function credentialFromObject(raw) {
       refresh,
       expires,
       ...(email ? { email } : {}),
+      ...(accountId ? { accountId } : {}),
     },
   }
 }
