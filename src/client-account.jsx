@@ -211,7 +211,6 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
         <label>调度策略 <select disabled={busy} value={scheduler.config?.strategy ?? 'fill-first'} onChange={event => updateScheduler({ strategy: event.currentTarget.value })}>
           <option value="fill-first">依次用满</option>
           <option value="round-robin">轮询</option>
-          <option value="weighted-round-robin">按权重轮询</option>
         </select></label>
         <label><input type="checkbox" disabled={busy} checked={scheduler.config?.sessionAffinity !== false} onChange={event => updateScheduler({ sessionAffinity: event.currentTarget.checked })} /> 同一对话固定账号</label>
       </div>
