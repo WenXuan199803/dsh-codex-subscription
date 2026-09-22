@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { request as httpsRequest } from 'node:https'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Readable } from 'node:stream'
@@ -11,6 +12,10 @@ const execFileAsync = promisify(execFile)
 const CODEX_AUTH_HOST = 'auth.openai.com'
 const CODEX_SUBSCRIPTION_HOST = 'chatgpt.com'
 const CODEX_HOSTS = new Set([CODEX_AUTH_HOST, CODEX_SUBSCRIPTION_HOST])
+const CODEX_ORIGINATOR = 'codex_cli_rs'
+const CODEX_COMPAT_VERSION = '0.155.1'
+const CODEX_USER_AGENT = `${CODEX_ORIGINATOR}/${CODEX_COMPAT_VERSION}`
+const CODEX_INSTALLATION_ID = randomUUID()
 
 const networkScope = new AsyncLocalStorage()
 let activeScopes = 0
@@ -19,6 +24,45 @@ let scopedFetch
 let baseWebSocket
 let scopedWebSocket
 let activeWebSocketScopes = 0
+
+function headerRecord(headers) {
+  if (headers === undefined || headers === null) return {}
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries())
+  return { ...headers }
+}
+
+function officialCodexHeaders(headers) {
+  const next = headerRecord(headers)
+  next.originator = CODEX_ORIGINATOR
+  next['User-Agent'] = CODEX_USER_AGENT
+  return next
+}
+
+function diagnosticText(data) {
+  if (typeof data === 'string') return data
+  if (Buffer.isBuffer(data)) return data.toString('utf8')
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8')
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf8')
+  return undefined
+}
+
+function safeModelEvent(data) {
+  try {
+    const text = diagnosticText(data)
+    if (text === undefined) return undefined
+    const event = JSON.parse(text)
+    if (event === null || typeof event !== 'object' || typeof event.type !== 'string') return undefined
+    const response = event.response
+    return {
+      type: event.type,
+      ...(response && typeof response === 'object' && typeof response.model === 'string' ? { model: response.model } : {}),
+      ...(response && typeof response === 'object' && typeof response.service_tier === 'string' ? { serviceTier: response.service_tier } : {}),
+      ...(response && typeof response === 'object' && Number.isSafeInteger(response.usage?.output_tokens) ? { outputTokens: response.usage.output_tokens } : {}),
+    }
+  } catch {
+    return undefined
+  }
+}
 
 function normalizeProxy(raw) {
   if (typeof raw !== 'string' || raw.trim() === '') return undefined
@@ -164,20 +208,67 @@ function createScopedWebSocketConstructor(WebSocketImpl = WebSocket) {
         webSocketOptions = { ...protocolsOrOptions }
       }
 
-      if (isCodex && route?.url) {
-        webSocketOptions.agent = new HttpsProxyAgent(route.url)
+      if (isCodex) {
+        webSocketOptions.headers = officialCodexHeaders(webSocketOptions.headers)
+        if (route?.url) webSocketOptions.agent = new HttpsProxyAgent(route.url)
       }
 
       if (protocols === undefined) super(url, webSocketOptions)
       else super(url, protocols, webSocketOptions)
+
+      this.codexSessionId = isCodex
+        ? String(webSocketOptions.headers?.['session-id'] ?? webSocketOptions.headers?.['Session-Id'] ?? randomUUID())
+        : undefined
+      this.codexThreadId = this.codexSessionId
+      this.codexWindowId = this.codexSessionId === undefined ? undefined : `${this.codexThreadId}:0`
+
+      if (isCodex) {
+        this.addEventListener('message', event => {
+          const info = safeModelEvent(event?.data)
+          if (info !== undefined) networkScope.getStore()?.options?.onModelEvent?.(info)
+        })
+      }
     }
 
     send(...args) {
       const scope = networkScope.getStore()
-      if (new URL(this.url).hostname === CODEX_SUBSCRIPTION_HOST) {
-        scope?.options?.onTransport?.('websocket')
+      if (new URL(this.url).hostname !== CODEX_SUBSCRIPTION_HOST) return super.send(...args)
+
+      scope?.options?.onTransport?.('websocket')
+      const raw = diagnosticText(args[0])
+      if (raw === undefined) return super.send(...args)
+
+      try {
+        const request = JSON.parse(raw)
+        if (request?.type !== 'response.create') return super.send(...args)
+        const turnId = randomUUID()
+        const turnMetadata = {
+          installation_id: CODEX_INSTALLATION_ID,
+          session_id: this.codexSessionId,
+          thread_id: this.codexThreadId,
+          turn_id: turnId,
+          window_id: this.codexWindowId,
+          request_kind: 'turn',
+          turn_started_at_unix_ms: Date.now(),
+        }
+        request.client_metadata = {
+          ...(request.client_metadata && typeof request.client_metadata === 'object' ? request.client_metadata : {}),
+          'x-codex-installation-id': CODEX_INSTALLATION_ID,
+          session_id: this.codexSessionId,
+          thread_id: this.codexThreadId,
+          'x-codex-window-id': this.codexWindowId,
+          turn_id: turnId,
+          'x-codex-turn-metadata': JSON.stringify(turnMetadata),
+        }
+        scope?.options?.onModelRequest?.({
+          model: typeof request.model === 'string' ? request.model : undefined,
+          serviceTier: typeof request.service_tier === 'string' ? request.service_tier : undefined,
+          clientIdentity: CODEX_ORIGINATOR,
+        })
+        return super.send(JSON.stringify(request), ...args.slice(1))
+      } catch {
+        return super.send(...args)
       }
-      return super.send(...args)
     }
   }
 }
@@ -192,8 +283,11 @@ export async function withCodexNetwork(run, options = {}) {
       const proxyFetch = scopedOptions.fetchThroughProxy ?? fetchThroughProxy
       const target = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
       if (target.protocol !== 'https:' || !allowedHosts.has(target.hostname)) return baseFetch(input, init)
+      let nextInit = init
       if (target.hostname === CODEX_SUBSCRIPTION_HOST && target.pathname === '/backend-api/codex/responses') {
         scopedOptions.onTransport?.('sse')
+        scopedOptions.onModelRequest?.({ clientIdentity: CODEX_ORIGINATOR })
+        nextInit = { ...init, headers: officialCodexHeaders(init?.headers) }
       }
       let proxy = resolved.get(target.hostname)
       if (proxy === undefined) {
@@ -202,7 +296,7 @@ export async function withCodexNetwork(run, options = {}) {
       }
       const route = await proxy
       scopedOptions.onRoute?.(route.source)
-      return route.url === undefined ? baseFetch(input, init) : proxyFetch(input, init, route.url)
+      return route.url === undefined ? baseFetch(input, nextInit) : proxyFetch(input, nextInit, route.url)
     }
     globalThis.fetch = scopedFetch
   }
@@ -275,9 +369,27 @@ export function createCodexNetworkTransport(options = {}) {
     let sawWebSocket = false
     let sawSse = false
     let routed = false
+    let requestedModel
+    let requestedServiceTier
+    let serverModel
+    let serverServiceTier
+    let clientIdentity
+    let firstEventMs
+    let firstTextMs
+    let outputTokens
+    const safeElapsed = () => Math.max(0, now() - startedAt)
     const transportFields = () => ({
       ...(transport === undefined ? {} : { transport }),
       ...(sawWebSocket && sawSse ? { fallback: 'websocket-to-sse' } : {}),
+      ...(clientIdentity === undefined ? {} : { clientIdentity }),
+      ...(requestedModel === undefined ? {} : { requestedModel }),
+      ...(requestedServiceTier === undefined ? {} : { requestedServiceTier }),
+      ...(serverModel === undefined ? {} : { serverModel }),
+      ...(serverServiceTier === undefined ? {} : { serverServiceTier }),
+      ...(firstEventMs === undefined ? {} : { firstEventMs }),
+      ...(firstTextMs === undefined ? {} : { firstTextMs }),
+      ...(outputTokens === undefined ? {} : { outputTokens }),
+      ...(area === 'model' ? { durationMs: safeElapsed() } : {}),
     })
     try {
       const value = await withCodexNetwork(operation, {
@@ -289,6 +401,21 @@ export function createCodexNetworkTransport(options = {}) {
           if (value === 'sse') sawSse = true
           transport = value
           options.onTransport?.(value)
+        },
+        onModelRequest: info => {
+          if (typeof info?.clientIdentity === 'string') clientIdentity = info.clientIdentity
+          if (typeof info?.model === 'string') requestedModel = info.model
+          if (typeof info?.serviceTier === 'string') requestedServiceTier = info.serviceTier
+          options.onModelRequest?.(info)
+        },
+        onModelEvent: info => {
+          const elapsed = safeElapsed()
+          if (firstEventMs === undefined) firstEventMs = elapsed
+          if (info?.type === 'response.output_text.delta' && firstTextMs === undefined) firstTextMs = elapsed
+          if (typeof info?.model === 'string') serverModel = info.model
+          if (typeof info?.serviceTier === 'string') serverServiceTier = info.serviceTier
+          if (Number.isSafeInteger(info?.outputTokens) && info.outputTokens >= 0) outputTokens = info.outputTokens
+          options.onModelEvent?.(info)
         },
       })
       if (value instanceof Response && !value.ok) {

@@ -7,6 +7,8 @@ const codes = new Set(['timeout', 'dns', 'tls', 'connection', 'network', 'http-e
 const routes = new Set(['direct', 'environment', 'system', 'bypass'])
 const transports = new Set(['websocket', 'sse'])
 const fallbacks = new Set(['websocket-to-sse'])
+const clientIdentities = new Set(['codex_cli_rs'])
+const serviceTiers = new Set(['default', 'priority', 'flex'])
 const elapsedBuckets = new Set(['under-1s', '1-5s', '5-15s', 'over-15s'])
 
 function safeRequests(network) {
@@ -23,6 +25,15 @@ function safeRequests(network) {
       route: value.route,
       ...(transports.has(value.transport) ? { transport: value.transport } : {}),
       ...(fallbacks.has(value.fallback) ? { fallback: value.fallback } : {}),
+      ...(clientIdentities.has(value.clientIdentity) ? { clientIdentity: value.clientIdentity } : {}),
+      ...(typeof value.requestedModel === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,95}$/u.test(value.requestedModel) ? { requestedModel: value.requestedModel } : {}),
+      ...(serviceTiers.has(value.requestedServiceTier) ? { requestedServiceTier: value.requestedServiceTier } : {}),
+      ...(typeof value.serverModel === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,95}$/u.test(value.serverModel) ? { serverModel: value.serverModel } : {}),
+      ...(serviceTiers.has(value.serverServiceTier) ? { serverServiceTier: value.serverServiceTier } : {}),
+      ...(Number.isSafeInteger(value.firstEventMs) && value.firstEventMs >= 0 && value.firstEventMs <= 3_600_000 ? { firstEventMs: value.firstEventMs } : {}),
+      ...(Number.isSafeInteger(value.firstTextMs) && value.firstTextMs >= 0 && value.firstTextMs <= 3_600_000 ? { firstTextMs: value.firstTextMs } : {}),
+      ...(Number.isSafeInteger(value.outputTokens) && value.outputTokens >= 0 && value.outputTokens <= 10_000_000 ? { outputTokens: value.outputTokens } : {}),
+      ...(Number.isSafeInteger(value.durationMs) && value.durationMs >= 0 && value.durationMs <= 3_600_000 ? { durationMs: value.durationMs } : {}),
       elapsed: value.elapsed,
     }
   }

@@ -168,11 +168,11 @@ test('subscription provider really uses authenticated WebSocket without silently
     send(value) {
       this.sent.push(String(value))
       const events = [
-        { type: 'response.created', response: { id: 'resp_ws' } },
+        { type: 'response.created', response: { id: 'resp_ws', model: 'gpt-5.6-sol', service_tier: 'default' } },
         { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_ws', role: 'assistant', content: [] } },
         { type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: 'ws-ok' },
         { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_ws', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'ws-ok', annotations: [] }] } },
-        { type: 'response.done', response: { id: 'resp_ws', status: 'completed', output: [], usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } },
+        { type: 'response.done', response: { id: 'resp_ws', model: 'gpt-5.6-sol', service_tier: 'default', status: 'completed', output: [], usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } },
       ]
       for (const event of events) queueMicrotask(() => this.emit('message', { data: JSON.stringify(event) }))
     }
@@ -219,15 +219,28 @@ test('subscription provider really uses authenticated WebSocket without silently
       sockets[0].options?.headers?.['chatgpt-account-id'] ?? sockets[0].options?.headers?.['ChatGPT-Account-ID'],
       'account-ws',
     )
-    assert.ok(sockets[0].sent.some(value => JSON.parse(value).type === 'response.create'))
+    const sent = sockets[0].sent.map(value => JSON.parse(value)).find(value => value.type === 'response.create')
+    assert.ok(sent)
+    assert.equal(sockets[0].options?.headers?.originator, 'codex_cli_rs')
+    assert.match(String(sockets[0].options?.headers?.['User-Agent'] ?? ''), /^codex_cli_rs\/0\.155\.1/u)
+    assert.equal(sent.client_metadata?.session_id !== undefined, true)
+    assert.equal(sent.client_metadata?.thread_id !== undefined, true)
+    assert.equal(sent.client_metadata?.['x-codex-installation-id'] !== undefined, true)
+    assert.equal(JSON.parse(sent.client_metadata?.['x-codex-turn-metadata']).request_kind, 'turn')
     assert.equal(globalThis.WebSocket, previousWebSocket)
     assert.equal(done, true)
-    assert.deepEqual(network.snapshot().model, {
-      status: 'ok',
-      route: 'direct',
-      elapsed: 'under-1s',
-      transport: 'websocket',
-    })
+    const snapshot = network.snapshot().model
+    assert.equal(snapshot.status, 'ok')
+    assert.equal(snapshot.route, 'direct')
+    assert.equal(snapshot.transport, 'websocket')
+    assert.equal(snapshot.clientIdentity, 'codex_cli_rs')
+    assert.equal(snapshot.requestedModel, 'gpt-5.6-sol')
+    assert.equal(snapshot.serverModel, 'gpt-5.6-sol')
+    assert.equal(snapshot.serverServiceTier, 'default')
+    assert.equal(snapshot.outputTokens, 1)
+    assert.equal(Number.isSafeInteger(snapshot.firstEventMs), true)
+    assert.equal(Number.isSafeInteger(snapshot.firstTextMs), true)
+    assert.equal(Number.isSafeInteger(snapshot.durationMs), true)
   } finally {
     globalThis.fetch = previousFetch
     globalThis.WebSocket = previousWebSocket
