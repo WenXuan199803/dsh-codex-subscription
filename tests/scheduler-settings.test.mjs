@@ -8,6 +8,7 @@ test('scheduler RPC policy updates normal settings and never writes the credenti
   let settingsWrites = 0
   const accountVault = {
     async list() { return [{ id: 'a', label: 'A', active: true }] },
+    async activeId() { return 'a' },
     async scheduler() { assert.fail('scheduler status must not read policy from credential vault') },
     async updateScheduler() { assert.fail('scheduler update must not write credential vault') },
   }
