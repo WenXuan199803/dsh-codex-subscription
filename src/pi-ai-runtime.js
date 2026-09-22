@@ -99,12 +99,18 @@ export function openaiCodexSubscriptionProvider({
   })
   const networkIterable = factory => {
     let iterator
+    let networkStarted = false
     const getIterator = () => (iterator ??= factory()[Symbol.asyncIterator]())
+    const firstNetworkOperation = operation => {
+      if (networkStarted) return operation()
+      networkStarted = true
+      return runNetwork('model', operation)
+    }
     return {
       [Symbol.asyncIterator]() { return this },
-      next: value => runNetwork('model', () => getIterator().next(value)),
-      return: value => runNetwork('model', () => getIterator().return?.(value) ?? Promise.resolve({ done: true, value })),
-      throw: error => runNetwork('model', () => getIterator().throw?.(error) ?? Promise.reject(error)),
+      next: value => firstNetworkOperation(() => getIterator().next(value)),
+      return: value => firstNetworkOperation(() => getIterator().return?.(value) ?? Promise.resolve({ done: true, value })),
+      throw: error => firstNetworkOperation(() => getIterator().throw?.(error) ?? Promise.reject(error)),
     }
   }
   return Object.freeze({
