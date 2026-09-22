@@ -8,6 +8,19 @@ const DEFAULT_MAX_RETRY_AFTER_MS = 5 * 60_000
 
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 
+function accountIdFromAccessToken(access) {
+  if (typeof access !== 'string') return undefined
+  const encoded = access.split('.')[1]
+  if (!encoded) return undefined
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
+    const accountId = payload?.['https://api.openai.com/auth']?.chatgpt_account_id
+    return typeof accountId === 'string' && accountId.length > 0 ? accountId : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function windowOf(value) {
   if (value === undefined || value === null) return undefined
   if (!record(value)) throw new Error('Codex returned a malformed rate-limit window')
@@ -191,7 +204,9 @@ export function createCodexUsageReader(options) {
     const auth = await getAuth({ signal })
     const credential = await readCredential({ signal })
     const access = auth?.auth?.apiKey
-    const accountId = credential?.type === 'oauth' ? credential.accountId : undefined
+    const accountId = credential?.type === 'oauth'
+      ? credential.accountId ?? accountIdFromAccessToken(access)
+      : undefined
     if (typeof access !== 'string' || access.length === 0
       || typeof accountId !== 'string' || accountId.length === 0) {
       throw new Error('ChatGPT subscription is not signed in')
