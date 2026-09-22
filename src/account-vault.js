@@ -5,6 +5,22 @@ const DEFAULT_LABEL = 'Account 1'
 const clone = value => value === undefined ? undefined : structuredClone(value)
 const EMAIL_MAX_LENGTH = 254
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u
+const SCHEDULER_STRATEGIES = new Set(['fill-first', 'round-robin', 'weighted-round-robin'])
+
+function normalizePriority(value) {
+  return Number.isInteger(value) && value >= -1000 && value <= 1000 ? value : 0
+}
+
+function normalizeWeight(value) {
+  return Number.isInteger(value) && value >= 1 && value <= 100 ? value : 1
+}
+
+function normalizeScheduler(value = {}) {
+  return {
+    strategy: SCHEDULER_STRATEGIES.has(value?.strategy) ? value.strategy : 'fill-first',
+    sessionAffinity: value?.sessionAffinity !== false,
+  }
+}
 
 /** Keep only a bounded, display-safe email address from a trusted OAuth result. */
 export function normalizeAccountEmail(value) {
