@@ -25,22 +25,6 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Align fork contracts
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs')
-          function replace(path, from, to) {
-            const before = fs.readFileSync(path, 'utf8')
-            if (!before.includes(from)) throw new Error(`${path}: expected text not found: ${from}`)
-            fs.writeFileSync(path, before.replace(from, to))
-          }
-          replace('tests/client-contract.test.mjs', "assert.match(config, /['\"]dsh-codex-subscription['\"]/)", "assert.match(config, /['\"]dsh-codex-subscription-sssv4['\"]/)")
-          replace('tests/release-contract.test.mjs', "assert.equal(pkg.name, 'dsh-codex-subscription')", "assert.equal(pkg.name, 'dsh-codex-subscription-sssv4')")
-          replace('README.md', '草图复现提示词（按原画面整理，非完整原始对话）', '草图复现说明（按原画面整理，非完整原始对话）')
-          replace('README.md', '实际生图提示词', '实际生图要求')
-          replace('README.md', '草图提示词：', '草图请求：')
-          replace('README.md', '生图提示词：', '生图请求：')
-          NODE
       - run: pnpm run test:behavior
       - run: pnpm run test:delivery
       - run: pnpm run build
