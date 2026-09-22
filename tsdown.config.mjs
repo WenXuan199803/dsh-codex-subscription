@@ -13,6 +13,7 @@ const hostExternal = [
   '@earendil-works/pi-ai',
   '@earendil-works/pi-ai/api/openai-codex-responses',
   '@earendil-works/pi-ai/providers/openai-codex',
+  'ws',
 ]
 const clientExternal = [
   'react', 'react/jsx-runtime', 'react-dom', '@deepseek-ai/cordis',
