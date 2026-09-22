@@ -167,6 +167,45 @@ test('Codex model scope installs a header-capable proxy-aware WebSocket and rest
   }
 })
 
+test('model diagnostics report WebSocket to SSE fallback truthfully', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWebSocket = globalThis.WebSocket
+
+  class FakeWebSocket {
+    constructor(url, options) {
+      this.url = String(url)
+      this.options = options
+    }
+    send() {}
+  }
+
+  globalThis.fetch = async () => new Response('sse')
+  try {
+    const transport = createCodexNetworkTransport({
+      WebSocketImpl: FakeWebSocket,
+      env: {},
+    })
+    await transport.run('model', async () => {
+      const socket = new globalThis.WebSocket('wss://chatgpt.com/backend-api/codex/responses', {
+        headers: { authorization: 'Bearer test' },
+      })
+      socket.send('{}')
+      await globalThis.fetch('https://chatgpt.com/backend-api/codex/responses', { method: 'POST' })
+    })
+
+    assert.deepEqual(transport.snapshot().model, {
+      status: 'ok',
+      route: 'direct',
+      elapsed: 'under-1s',
+      transport: 'sse',
+      fallback: 'websocket-to-sse',
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.WebSocket = originalWebSocket
+  }
+})
+
 test('network diagnostics keep actionable request failures without proxy addresses', async () => {
   const transport = createCodexNetworkTransport({
     env: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' },
