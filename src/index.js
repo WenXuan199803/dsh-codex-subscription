@@ -27,7 +27,7 @@ import { inheritedOriginalImageRef } from './image-original-contract.js'
 import { createSubscriptionDiagnostics } from './diagnostics.js'
 import { CodexAccountScheduler, ScheduledCodexAdapter } from './account-scheduler.js'
 import { createAccountUsageService } from './account-usage.js'
-import { CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeQuickQuotaMode, normalizeOutputVerbosity, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
+import { ACCOUNT_ROUTING_MODE_FIELD, ACCOUNT_ROUTING_MODE_NATIVE, CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeAccountRoutingMode, normalizeQuickQuotaMode, normalizeOutputVerbosity, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
 import { createCodexUsageReader } from './usage.js'
 import { createQuotaForecastReader } from './quota-forecast.js'
 import { QuotaForecastStateStore } from './quota-forecast-store.js'
@@ -123,9 +123,8 @@ export function apply(ctx) {
     baseModels: () => baseProvider.getModels(),
     fetch: (input, init) => network.fetch('catalog', input, init),
   })
-  const forceFast = process.env.CODEX_FORCE_FAST === '1'
   const provider = openaiCodexSubscriptionProvider({
-    resolveSpeedMode: () => forceFast ? 'fast' : settings.get()[SPEED_MODE_FIELD],
+    resolveSpeedMode: () => settings.get()[SPEED_MODE_FIELD],
     resolveOutputVerbosity: () => normalizeOutputVerbosity(settings.get()[OUTPUT_VERBOSITY_FIELD]),
     resolveContextMode: () => normalizeContextMode(settings.get()[CONTEXT_MODE_FIELD]),
     resolveCustomContextWindow: modelKey => {
@@ -146,7 +145,8 @@ export function apply(ctx) {
         settings.get()[LEGACY_QUICK_QUOTA_FIELD],
       ),
       [SEARCH_PROVIDER_FIELD]: settings.get()[SEARCH_PROVIDER_FIELD],
-      [SPEED_MODE_FIELD]: forceFast ? 'fast' : settings.get()[SPEED_MODE_FIELD],
+      [SPEED_MODE_FIELD]: settings.get()[SPEED_MODE_FIELD],
+      [ACCOUNT_ROUTING_MODE_FIELD]: normalizeAccountRoutingMode(settings.get()[ACCOUNT_ROUTING_MODE_FIELD]),
       [OUTPUT_VERBOSITY_FIELD]: normalizeOutputVerbosity(settings.get()[OUTPUT_VERBOSITY_FIELD]),
       [CONTEXT_MODE_FIELD]: normalizeContextMode(settings.get()[CONTEXT_MODE_FIELD]),
       [CUSTOM_CONTEXT_WINDOW_FIELD]: normalizeCustomContextWindow(settings.get()[CUSTOM_CONTEXT_WINDOW_FIELD]),
@@ -228,8 +228,11 @@ export function apply(ctx) {
     auth: adapterAuth,
     resolveAttachments: () => ctx.get?.('attachments'),
   })
-  const bypassScheduler = process.env.CODEX_ACCOUNT_POOL_BYPASS === '1'
-  const registeredAdapter = scheduler === undefined || bypassScheduler ? adapter : new ScheduledCodexAdapter(adapter, scheduler, store)
+  const registeredAdapter = scheduler === undefined
+    ? adapter
+    : new ScheduledCodexAdapter(adapter, scheduler, store, {
+        bypass: () => normalizeAccountRoutingMode(settings.get()[ACCOUNT_ROUTING_MODE_FIELD]) === ACCOUNT_ROUTING_MODE_NATIVE,
+      })
   ctx.llm.registerAdapter([PROVIDER], registeredAdapter)
   const currentAgent = () => ctx.get?.('agents')?.currentInitiator?.()
   const codexSearch = createCodexSearchProvider({
