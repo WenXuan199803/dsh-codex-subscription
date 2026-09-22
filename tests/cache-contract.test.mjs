@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-test('Codex profile keeps prompt caching but avoids credential-unsafe cached WebSockets', async () => {
+test('Codex profile keeps prompt caching and isolates WebSocket sessions by account', async () => {
   const source = await readFile(new URL('../src/index.js', import.meta.url), 'utf8')
   assert.match(source, /cacheRetention:\s*['"]short['"]/)
-  assert.match(source, /transport:\s*['"]sse['"]/)
+  assert.match(source, /transport:\s*['"]auto['"]/)
+  assert.match(source, /sessionId}:account:\$\{accountId\}/)
   assert.match(source, /prompt_cache_key|pi-ai owns prompt_cache_key/)
   assert.doesNotMatch(source, /providerRetryPolicy\s*\(/, 'inherit DSH/pi-ai retry policy instead of adding a no-op override')
 })
