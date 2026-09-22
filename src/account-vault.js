@@ -272,7 +272,7 @@ export class DshOAuthAccountVault {
       if (patch.enabled !== undefined && typeof patch.enabled !== 'boolean') throw new Error('Invalid Codex account enabled state')
       if (patch.priority !== undefined && normalizePriority(patch.priority) !== patch.priority) throw new Error('Invalid Codex account priority')
       if (patch.weight !== undefined && normalizeWeight(patch.weight) !== patch.weight) throw new Error('Invalid Codex account weight')
-      await this.#modifyPayload(current => {
+      const payload = await this.#modifyPayload(current => {
         const index = current.accounts.findIndex(account => account.id === id)
         if (index < 0) throw new Error('Unknown Codex account')
         const accounts = [...current.accounts]
@@ -284,7 +284,16 @@ export class DshOAuthAccountVault {
         }
         return { ...current, accounts }
       })
-      return this.list()
+      return payload.accounts.map(account => ({
+        id: account.id,
+        label: account.label,
+        active: account.id === payload.activeId,
+        enabled: account.enabled !== false,
+        priority: normalizePriority(account.priority),
+        weight: normalizeWeight(account.weight),
+        expiresAt: account.credential.expires,
+        ...(account.credential.email === undefined ? {} : { email: account.credential.email }),
+      }))
     })
   }
 
