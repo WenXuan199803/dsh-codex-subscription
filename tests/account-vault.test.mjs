@@ -253,3 +253,28 @@ test('request-scoped credential reads and refreshes do not mutate the active acc
   assert.equal((await vault.read('local-1')).access, 'access-one-refreshed')
   assert.deepEqual(await vault.readActive(), oauth('two'))
 })
+
+
+test('native test-account fallback reads and refreshes the selected account without changing activeId', async () => {
+  const backend = memoryCredentials({ refs: { CODEX_OAUTH: JSON.stringify(oauth('one')) } })
+  const ids = ['local-1', 'local-2']
+  const vault = new DshOAuthAccountVault(backend, {
+    key: 'dsh-codex-subscription/accounts', legacyRef: 'CODEX_OAUTH', createId: () => ids.shift(),
+  })
+  await vault.list()
+  await vault.add('Work', oauth('two'))
+  await vault.select('local-1')
+  let testId = 'local-2'
+  const store = new DshOAuthCredentialStore(backend, 'CODEX_OAUTH', [], {
+    vault,
+    fallbackAccountId: () => testId,
+  })
+
+  assert.deepEqual(await store.read('openai-codex'), oauth('two'))
+  await store.modify('openai-codex', current => ({ ...current, access: 'access-two-test-refreshed' }))
+  assert.equal((await vault.read('local-2')).access, 'access-two-test-refreshed')
+  assert.equal((await vault.activeId()), 'local-1')
+
+  testId = undefined
+  assert.deepEqual(await store.read('openai-codex'), oauth('one'))
+})
