@@ -373,7 +373,8 @@ export function createCodexRpcHandler(coordinator, options = {}) {
     } catch (error) {
       if (signal.aborted) throw error
       // Never reflect provider errors; even bad requests get a bounded message.
-      const message = error instanceof Error && /^(unknown|unsupported|a Codex|Codex login)/.test(error.message)
+      const safe = /^(unknown|unsupported|a Codex|Codex login|No Codex|No new Codex|Import |Invalid ZIP|Truncated ZIP|Unsupported ZIP|Encrypted ZIP|Codex account|Invalid Codex|Unsupported Codex)/u
+      const message = error instanceof Error && safe.test(error.message)
         ? error.message
         : 'Codex request failed'
       return badRequest(message)
