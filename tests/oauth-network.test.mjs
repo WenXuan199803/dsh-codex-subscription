@@ -193,13 +193,14 @@ test('model diagnostics report WebSocket to SSE fallback truthfully', async () =
       await globalThis.fetch('https://chatgpt.com/backend-api/codex/responses', { method: 'POST' })
     })
 
-    assert.deepEqual(transport.snapshot().model, {
-      status: 'ok',
-      route: 'direct',
-      elapsed: 'under-1s',
-      transport: 'sse',
-      fallback: 'websocket-to-sse',
-    })
+    const snapshot = transport.snapshot().model
+    assert.equal(snapshot.status, 'ok')
+    assert.equal(snapshot.route, 'direct')
+    assert.equal(snapshot.elapsed, 'under-1s')
+    assert.equal(snapshot.transport, 'sse')
+    assert.equal(snapshot.fallback, 'websocket-to-sse')
+    assert.equal(snapshot.clientIdentity, 'codex_cli_rs')
+    assert.equal(Number.isSafeInteger(snapshot.durationMs), true)
   } finally {
     globalThis.fetch = originalFetch
     globalThis.WebSocket = originalWebSocket
