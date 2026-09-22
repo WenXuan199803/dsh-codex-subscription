@@ -354,6 +354,31 @@ export class DshOAuthAccountVault {
     })
   }
 
+  modify(id, update) {
+    return this.#enqueue(async () => {
+      const existing = await this.#ensurePayload()
+      if (existing === undefined) throw new Error('Codex account vault is not signed in')
+      let result
+      await this.#modifyPayload(async current => {
+        const index = current.accounts.findIndex(account => account.id === id)
+        if (index < 0) throw new Error('Unknown Codex account')
+        const previous = clone(current.accounts[index].credential)
+        const next = await update(previous)
+        if (next === undefined) {
+          result = previous
+          return current
+        }
+        const credential = sanitizeOAuthCredential(next)
+        if (credential.email === undefined && previous.email !== undefined) credential.email = previous.email
+        const accounts = [...current.accounts]
+        accounts[index] = { ...accounts[index], credential }
+        result = clone(credential)
+        return { ...current, accounts }
+      })
+      return result
+    })
+  }
+
   modifyActive(update) {
     return this.#enqueue(async () => {
       const existing = await this.#ensurePayload()
