@@ -88,6 +88,10 @@ export const STYLE = `
 .codexSubscriptionDot[data-state=connected]{background:var(--dsw-alias-state-success-primary)}
 .codexSubscriptionDot[data-state=disconnected]{background:var(--dsw-alias-state-error-primary)}
 .codexSubscriptionActions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.codexSubscriptionTestState{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-module-platform);font-size:12px;line-height:18px}
+.codexSubscriptionTestState strong{font-size:13px;color:var(--dsw-alias-label-primary)}
+.codexSubscriptionTestState span{color:var(--dsw-alias-label-secondary)}
+.codexSubscriptionTestState small{flex-basis:100%;color:var(--dsw-alias-label-tertiary)}
 .codexSubscriptionFlow{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border-radius:10px;background:var(--dsw-alias-bg-module-platform)}
 .codexSubscriptionFlow p{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
 .codexSubscriptionCode{width:max-content;max-width:100%;font:600 16px/22px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;overflow-wrap:anywhere}
