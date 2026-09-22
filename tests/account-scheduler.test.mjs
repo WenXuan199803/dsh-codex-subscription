@@ -99,3 +99,40 @@ test('scheduled adapter hides a pre-output failure and continues on the next acc
   for await (const _ of adapter.stream({ provider: 'openai-codex', model: 'gpt-test', messages: [], sessionId: 'session-1' })) {}
   assert.deepEqual(selected, ['b'], 'the session remains pinned to the replacement account')
 })
+
+
+test('native bypass delegates directly and can be switched live without rebuilding the adapter', async () => {
+  let bypass = true
+  let scheduledCalls = 0
+  const base = {
+    providerInfo(provider) { return { id: provider, name: provider } },
+    providerRetryPolicy() { return undefined },
+    imageRequestPricing() { return undefined },
+    async listModels() { return [] },
+    async resolveModel(provider, model) { return { provider, id: model, name: model } },
+    async prepareCall(provider, model) {
+      return { model: await this.resolveModel(provider, model), stream: options => this.stream(options) }
+    },
+    async *stream() {
+      yield { type: 'text-delta', index: 0, text: 'direct' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  const scheduler = {
+    async accounts() { scheduledCalls += 1; return [{ id: 'a', label: 'A' }] },
+    async choose() { return { id: 'a', label: 'A' } },
+    markSuccess() {},
+    markFailure() { return { retryable: false } },
+  }
+  const store = { withAccount(_id, operation) { return operation() } }
+  const adapter = new ScheduledCodexAdapter(base, scheduler, store, { bypass: () => bypass })
+
+  const direct = []
+  for await (const chunk of adapter.stream({ provider: 'openai-codex', model: 'gpt-test', messages: [] })) direct.push(chunk)
+  assert.equal(direct.find(chunk => chunk.type === 'text-delta')?.text, 'direct')
+  assert.equal(scheduledCalls, 0)
+
+  bypass = false
+  for await (const _ of adapter.stream({ provider: 'openai-codex', model: 'gpt-test', messages: [] })) {}
+  assert.equal(scheduledCalls, 1)
+})
