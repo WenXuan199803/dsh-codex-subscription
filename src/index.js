@@ -26,6 +26,7 @@ import { OriginalImageStore } from './image-original-store.js'
 import { inheritedOriginalImageRef } from './image-original-contract.js'
 import { createSubscriptionDiagnostics } from './diagnostics.js'
 import { CodexAccountScheduler, ScheduledCodexAdapter } from './account-scheduler.js'
+import { createAccountUsageService } from './account-usage.js'
 import { CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeQuickQuotaMode, normalizeOutputVerbosity, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
 import { createCodexUsageReader } from './usage.js'
 import { createQuotaForecastReader } from './quota-forecast.js'
@@ -273,6 +274,15 @@ export function apply(ctx) {
     readCredential: options => store.read(PROVIDER, options),
     fetch: (input, init) => network.fetch('quota', input, init),
   })
+  const accountUsageService = accountVault === undefined ? undefined : createAccountUsageService({
+    accountVault,
+    store,
+    createReader: id => createCodexUsageReader({
+      getAuth: options => store.withAccount(id, () => resolveAuth(options)),
+      readCredential: options => store.withAccount(id, () => store.read(PROVIDER, options)),
+      fetch: (input, init) => network.fetch('quota', input, init),
+    }),
+  })
   const usageReader = createQuotaForecastReader({
     reader: baseUsageReader,
     enabled: () => normalizeQuickQuotaMode(settings.get()[QUICK_QUOTA_MODE_FIELD], settings.get()[LEGACY_QUICK_QUOTA_FIELD]) === QUICK_QUOTA_MODE_FORECAST,
@@ -320,6 +330,7 @@ export function apply(ctx) {
   const subscriptionHandler = createSubscriptionRpcHandler({
     authHandler: createCodexRpcHandler(coordinator, { openExternal: openCodexAuthUrl }),
     usageReader,
+    accountUsageService,
     resetCreditService,
     preferences,
     diagnosticsReader: () => createSubscriptionDiagnostics({ auth, preferences, login: coordinator.supportState(), network, modelCatalog }),
