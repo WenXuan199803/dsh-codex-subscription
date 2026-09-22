@@ -68,7 +68,16 @@ export const STYLE = `
 .codexSubscriptionAccountRow,.codexSubscriptionSectionHead{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .codexSubscriptionStatus{display:flex;align-items:center;gap:8px;font-size:14px;line-height:22px;font-weight:500}
 .codexSubscriptionAccounts{display:flex;flex-direction:column;border-top:1px solid var(--dsw-alias-border-l2)}
-.codexSubscriptionAccount{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:42px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:13px}
+.codexSubscriptionAccount{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:52px;padding:5px 0;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:13px}
+.codexSubscriptionAccountCopy{display:flex;min-width:0;flex:1;flex-direction:column;gap:3px}
+.codexSubscriptionAccountName{display:flex;min-width:0;align-items:center;gap:7px}
+.codexSubscriptionAccountState{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
+.codexSubscriptionAccountQuota{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:17px}
+.codexSubscriptionAccountQuotaWindow{display:inline-flex;align-items:center;gap:5px}
+.codexSubscriptionAccountQuotaWindow strong{font-weight:600;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
+.codexSubscriptionAccountQuotaWindow small{font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.codexSubscriptionAccountQuotaMuted{color:var(--dsw-alias-label-tertiary)}
+.codexSubscriptionAccountQuotaError{color:var(--dsw-alias-state-error-primary)}
 .codexSubscriptionAccount:last-child{border-bottom:0}
 .codexSubscriptionAccount[data-active=true] .codexSubscriptionEmail,.codexSubscriptionAccount[data-active=true]>span{font-weight:600}
 .codexSubscriptionEmail{max-width:100%;overflow:hidden;padding:2px 4px;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
