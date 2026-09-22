@@ -7,7 +7,7 @@ const publicError = (code, message) => ({
   error: { code, message, details: { issues: [] } },
 })
 
-export function createSubscriptionRpcHandler({ authHandler, usageReader, resetCreditService, preferences, diagnosticsReader, modelCatalog, originalImages, resolveInheritedOriginal }) {
+export function createSubscriptionRpcHandler({ authHandler, usageReader, accountUsageService, resetCreditService, preferences, diagnosticsReader, modelCatalog, originalImages, resolveInheritedOriginal }) {
   return async (endpoint, payload, signal) => {
     if (endpoint === 'image/original/chunk') {
       try {
@@ -91,6 +91,15 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, resetCr
         return publicError('internal', 'Could not update preferences')
       }
     }
+    if (endpoint === 'usage/accounts') {
+      try {
+        signal.throwIfAborted()
+        return { ok: true, value: await accountUsageService?.readAll({ force: payload?.force === true, signal }) ?? { accounts: [], fetchedAt: Date.now() } }
+      } catch (error) {
+        if (signal.aborted) throw error
+        return publicError('internal', 'Could not read account usage')
+      }
+    }
     if (endpoint === 'usage') {
       try {
         signal.throwIfAborted()
@@ -146,14 +155,17 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, resetCr
     const result = await authHandler(endpoint, payload, signal)
     if (endpoint === 'account/remove' && result.ok === true && typeof payload?.id === 'string') {
       await usageReader.clearScope(payload.id)
+      accountUsageService?.clear(payload.id)
     }
     if (endpoint === 'logout' && result.ok === true) {
       await usageReader.clear()
+      accountUsageService?.clear()
       resetCreditService.clear()
       modelCatalog?.clear()
     } else if (result.ok === true && (['account/select', 'account/remove', 'account/import', 'account/configure'].includes(endpoint)
       || (endpoint === 'login/status' && result.value?.authenticated === true))) {
       usageReader.clearCache()
+      accountUsageService?.clear()
       resetCreditService.clear()
       modelCatalog?.clear()
       void modelCatalog?.refresh({ signal: undefined }).catch(() => {})
