@@ -327,3 +327,29 @@ test('usage reader fails closed with bounded public errors', async () => {
     return true
   })
 })
+
+
+test('usage reader derives chatgpt account id from the OAuth access token when imported metadata omitted it', async () => {
+  const payload = Buffer.from(JSON.stringify({
+    'https://api.openai.com/auth': { chatgpt_account_id: 'jwt-account-id' },
+  })).toString('base64url')
+  const access = `header.${payload}.signature`
+  let seen
+  const reader = createCodexUsageReader({
+    async getAuth() { return { auth: { apiKey: access } } },
+    async readCredential() { return { type: 'oauth', access, refresh: 'refresh', expires: Date.now() + 60_000 } },
+    async fetch(_url, init) {
+      seen = init.headers
+      return {
+        ok: true,
+        async json() {
+          return { rate_limit: { primary_window: { used_percent: 25, limit_window_seconds: 18_000 } } }
+        },
+      }
+    },
+  })
+  const usage = await reader.read()
+  assert.equal(seen['chatgpt-account-id'], 'jwt-account-id')
+  assert.equal(usage.rateLimits[0].windows[0].remainingPercent, 75)
+  assert.doesNotMatch(JSON.stringify(usage), /jwt-account-id/)
+})
