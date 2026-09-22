@@ -171,6 +171,14 @@ function createScopedWebSocketConstructor(WebSocketImpl = WebSocket) {
       if (protocols === undefined) super(url, webSocketOptions)
       else super(url, protocols, webSocketOptions)
     }
+
+    send(...args) {
+      const scope = networkScope.getStore()
+      if (new URL(this.url).hostname === CODEX_SUBSCRIPTION_HOST) {
+        scope?.options?.onTransport?.('websocket')
+      }
+      return super.send(...args)
+    }
   }
 }
 
@@ -184,6 +192,9 @@ export async function withCodexNetwork(run, options = {}) {
       const proxyFetch = scopedOptions.fetchThroughProxy ?? fetchThroughProxy
       const target = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
       if (target.protocol !== 'https:' || !allowedHosts.has(target.hostname)) return baseFetch(input, init)
+      if (target.hostname === CODEX_SUBSCRIPTION_HOST && target.pathname === '/backend-api/codex/responses') {
+        scopedOptions.onTransport?.('sse')
+      }
       let proxy = resolved.get(target.hostname)
       if (proxy === undefined) {
         proxy = resolveCodexProxy({ ...scopedOptions, target })
@@ -260,21 +271,34 @@ export function createCodexNetworkTransport(options = {}) {
   const run = async (area, operation) => {
     const startedAt = now()
     let route = attempts.get(area)?.route ?? 'direct'
+    let transport = attempts.get(area)?.transport
+    let sawWebSocket = false
+    let sawSse = false
     let routed = false
+    const transportFields = () => ({
+      ...(transport === undefined ? {} : { transport }),
+      ...(sawWebSocket && sawSse ? { fallback: 'websocket-to-sse' } : {}),
+    })
     try {
       const value = await withCodexNetwork(operation, {
         ...options,
         webSocket: area === 'model',
         onRoute: source => { route = source; routed = true },
+        onTransport: value => {
+          if (value === 'websocket') sawWebSocket = true
+          if (value === 'sse') sawSse = true
+          transport = value
+          options.onTransport?.(value)
+        },
       })
       if (value instanceof Response && !value.ok) {
-        attempts.set(area, { status: 'failed', stage: 'http', code: 'http-error', httpStatus: value.status, route, elapsed: elapsedBucket(now() - startedAt) })
+        attempts.set(area, { status: 'failed', stage: 'http', code: 'http-error', httpStatus: value.status, route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
       } else if (routed || value instanceof Response) {
-        attempts.set(area, { status: 'ok', route, elapsed: elapsedBucket(now() - startedAt) })
+        attempts.set(area, { status: 'ok', route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
       }
       return value
     } catch (error) {
-      if (routed) attempts.set(area, { status: 'failed', stage: 'transport', code: classifyTransportError(error), route, elapsed: elapsedBucket(now() - startedAt) })
+      if (routed) attempts.set(area, { status: 'failed', stage: 'transport', code: classifyTransportError(error), route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
       throw error
     }
   }
