@@ -49,6 +49,9 @@ export function openaiCodexSubscriptionProvider({
       return { auth: { apiKey: token }, source: 'DSH-managed OAuth request' }
     },
   })
+  const providerEnv = Object.freeze(Object.fromEntries(
+    Object.entries(process.env).filter(([, value]) => typeof value === 'string'),
+  ))
   const modelMetadata = model => catalog?.metadata(model?.id)
   const supportsVerbosity = model => modelMetadata(model)?.supportVerbosity ?? model?.id !== 'gpt-5.3-codex-spark'
   const withPreferences = (model, options = {}) => {
@@ -66,6 +69,7 @@ export function openaiCodexSubscriptionProvider({
     const sessionId = resolveSessionId(options.sessionId)
     return {
       ...options,
+      env: options.env ?? providerEnv,
       ...(transport === undefined ? {} : { transport }),
       ...(sessionId === undefined ? {} : { sessionId }),
       ...(textVerbosity === undefined ? {} : { textVerbosity }),
