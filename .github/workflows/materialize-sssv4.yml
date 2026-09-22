@@ -8,6 +8,7 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'package.json'
+      - 'compatibility.json'
       - 'pnpm-lock.yaml'
       - 'tsdown.config.mjs'
 
