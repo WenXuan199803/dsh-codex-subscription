@@ -431,7 +431,7 @@ test('build emits host entries and a DSH module-loader client', async () => {
   assert.doesNotMatch(config, /src\/boundary\.js/)
   assert.match(config, /src\/client\.jsx/)
   assert.match(config, /window\.__ModuleLoader__\.load/)
-  assert.match(config, /['"]dsh-codex-subscription['"]/)
+  assert.match(config, /['"]dsh-codex-subscription-sssv4['"]/)
   assert.doesNotMatch(config, /wsl043/iu)
 })
 
