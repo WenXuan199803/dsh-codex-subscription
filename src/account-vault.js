@@ -326,29 +326,59 @@ export class DshOAuthAccountVault {
   importMany(entries) {
     return this.#enqueue(async () => {
       if (!Array.isArray(entries) || entries.length === 0) throw new Error('No Codex accounts to import')
-      await this.#ensurePayload()
+      const validated = entries.map((entry, index) => {
+        const credential = sanitizeOAuthCredential(entry?.credential)
+        const fallback = credential.email ?? `Account ${index + 1}`
+        return { label: normalizeLabel(entry?.label ?? fallback), credential }
+      })
+      const existing = await this.#ensurePayload()
+      if (existing === undefined) {
+        const seenRefresh = new Set()
+        const seenAccess = new Set()
+        const accounts = []
+        let duplicates = 0
+        for (const entry of validated) {
+          if (seenRefresh.has(entry.credential.refresh) || seenAccess.has(entry.credential.access)) {
+            duplicates += 1
+            continue
+          }
+          const id = this.createId()
+          accounts.push({ id, label: entry.label, credential: entry.credential, enabled: true, priority: 0, weight: 1 })
+          seenRefresh.add(entry.credential.refresh)
+          seenAccess.add(entry.credential.access)
+        }
+        if (accounts.length === 0) throw new Error('No new Codex accounts to import')
+        const created = await this.credentials.modifyRecord(this.key, current => {
+          if (current !== undefined) return Promise.resolve(current)
+          return Promise.resolve(grant({
+            version: VERSION,
+            activeId: accounts[0].id,
+            accounts,
+            scheduler: normalizeScheduler(),
+          }))
+        })
+        const payload = assertVaultRecord(created)
+        return { added: payload.accounts.length, duplicates, total: payload.accounts.length }
+      }
+
       let added = 0
       let duplicates = 0
       const payload = await this.#modifyPayload(current => {
         const refreshTokens = new Set(current.accounts.map(account => account.credential.refresh))
         const accessTokens = new Set(current.accounts.map(account => account.credential.access))
         const accounts = [...current.accounts]
-        for (const entry of entries) {
-          const credential = sanitizeOAuthCredential(entry?.credential)
-          if (refreshTokens.has(credential.refresh) || accessTokens.has(credential.access)) {
+        for (const entry of validated) {
+          if (refreshTokens.has(entry.credential.refresh) || accessTokens.has(entry.credential.access)) {
             duplicates += 1
             continue
           }
           const id = this.createId()
-          const fallback = credential.email ?? `Account ${accounts.length + 1}`
-          const label = normalizeLabel(entry?.label ?? fallback)
-          accounts.push({ id, label, credential, enabled: true, priority: 0, weight: 1 })
-          refreshTokens.add(credential.refresh)
-          accessTokens.add(credential.access)
+          accounts.push({ id, label: entry.label, credential: entry.credential, enabled: true, priority: 0, weight: 1 })
+          refreshTokens.add(entry.credential.refresh)
+          accessTokens.add(entry.credential.access)
           added += 1
         }
-        if (added === 0) return current
-        return { ...current, activeId: current.activeId || accounts[0].id, accounts }
+        return added === 0 ? current : { ...current, accounts }
       })
       return { added, duplicates, total: payload.accounts.length }
     })
