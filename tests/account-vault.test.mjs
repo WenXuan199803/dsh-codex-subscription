@@ -229,3 +229,27 @@ test('a read-only legacy source cannot turn a committed account switch into a fa
   assert.equal((await vault.list()).find(account => account.active).id, 'local-1')
   assert.equal(syncFailures, 0)
 })
+
+
+test('request-scoped credential reads and refreshes do not mutate the active account', async () => {
+  const backend = memoryCredentials({ refs: { CODEX_OAUTH: JSON.stringify(oauth('one')) } })
+  const ids = ['local-1', 'local-2']
+  const vault = new DshOAuthAccountVault(backend, {
+    key: 'dsh-codex-subscription/accounts', legacyRef: 'CODEX_OAUTH', createId: () => ids.shift(),
+  })
+  const store = new DshOAuthCredentialStore(backend, 'CODEX_OAUTH', [], { vault })
+  await vault.list()
+  await vault.add('Work', oauth('two'))
+  assert.equal((await vault.list()).find(account => account.active).id, 'local-2')
+
+  const first = await store.withAccount('local-1', () => store.read('openai-codex'))
+  assert.deepEqual(first, oauth('one'))
+
+  await store.withAccount('local-1', () => store.modify('openai-codex', current => ({
+    ...current,
+    access: 'access-one-refreshed',
+  })))
+
+  assert.equal((await vault.read('local-1')).access, 'access-one-refreshed')
+  assert.deepEqual(await vault.readActive(), oauth('two'))
+})
