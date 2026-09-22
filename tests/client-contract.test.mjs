@@ -478,3 +478,10 @@ test('account UI exposes unambiguous A/B test state and per-account test selecti
   assert.match(source, /用此账号测试/u)
   assert.match(source, /速度：/u)
 })
+
+
+test('native account test selection never uses the persistent account/select route', async () => {
+  const source = await read('src/client-account.jsx')
+  assert.match(source, /call\(['"]account\/test-select['"],\s*\{ id \}\)/u)
+  assert.match(source, /selectTestAccount\(candidate\.id\)/u)
+})
