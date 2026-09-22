@@ -73,6 +73,8 @@ export class CodexLoginCoordinator {
     this.scheduler = options.scheduler
     this.getTestAccountId = options.getTestAccountId ?? (() => undefined)
     this.setTestAccountId = options.setTestAccountId ?? (() => {})
+    this.getSchedulerConfig = options.getSchedulerConfig ?? (() => this.accountVault?.scheduler?.())
+    this.updateSchedulerConfig = options.updateSchedulerConfig ?? (patch => this.accountVault?.updateScheduler?.(patch))
   }
 
   async accountStatus(options) {
@@ -319,7 +321,7 @@ export class CodexLoginCoordinator {
   async schedulerStatus() {
     if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
     return {
-      config: await this.accountVault.scheduler(),
+      config: await this.getSchedulerConfig(),
       accounts: await this.accountVault.list(),
       runtime: this.scheduler?.snapshot?.() ?? { bindings: 0, cooldowns: [] },
       testAccountId: this.getTestAccountId(),
@@ -328,7 +330,13 @@ export class CodexLoginCoordinator {
 
   async updateScheduler(patch) {
     if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
-    await this.accountVault.updateScheduler(patch)
+    if (patch.strategy !== undefined && !['fill-first', 'round-robin', 'weighted-round-robin'].includes(patch.strategy)) {
+      throw new Error('Unsupported Codex scheduling strategy')
+    }
+    if (patch.sessionAffinity !== undefined && typeof patch.sessionAffinity !== 'boolean') {
+      throw new Error('Invalid Codex session affinity setting')
+    }
+    await this.updateSchedulerConfig(patch)
     return this.schedulerStatus()
   }
 }
