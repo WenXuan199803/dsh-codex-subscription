@@ -278,3 +278,44 @@ test('native test-account fallback reads and refreshes the selected account with
   testId = undefined
   assert.deepEqual(await store.read('openai-codex'), oauth('one'))
 })
+
+
+test('imported vault records remain JSON-stable across select and configure writes', async () => {
+  const record = {
+    kind: 'grant',
+    payload: {
+      version: 1,
+      activeId: 'a',
+      accounts: [
+        { id: 'a', label: 'A', credential: oauth('a'), enabled: true, priority: 0, weight: 1 },
+        { id: 'b', label: 'B', credential: oauth('b'), enabled: true, priority: 0, weight: 1 },
+      ],
+      scheduler: { strategy: 'fill-first', sessionAffinity: true },
+    },
+  }
+  const base = memoryCredentials({ records: { 'dsh-codex-subscription/accounts': record } })
+  const backend = {
+    ...base,
+    async modifyRecord(key, mutate) {
+      return base.modifyRecord(key, async current => {
+        const next = await mutate(current)
+        if (next !== undefined) {
+          assert.deepEqual(next, JSON.parse(JSON.stringify(next)), 'DSH grant payload must survive a JSON round trip')
+        }
+        return next
+      })
+    },
+  }
+  const vault = new DshOAuthAccountVault(backend, {
+    key: 'dsh-codex-subscription/accounts',
+    legacyRef: 'CODEX_OAUTH',
+  })
+
+  await vault.select('b')
+  await vault.configure('a', { enabled: false })
+
+  const accounts = await vault.list()
+  assert.equal(accounts.find(account => account.id === 'b').active, true)
+  assert.equal(accounts.find(account => account.id === 'a').enabled, false)
+  assert.equal(Object.hasOwn(base.readRecordRaw('dsh-codex-subscription/accounts').payload, 'legacyAccountId'), false)
+})
