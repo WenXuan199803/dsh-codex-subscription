@@ -5,6 +5,7 @@ import { Readable } from 'node:stream'
 import { promisify } from 'node:util'
 
 import { HttpsProxyAgent } from 'https-proxy-agent'
+import WebSocket from 'ws'
 
 const execFileAsync = promisify(execFile)
 const CODEX_AUTH_HOST = 'auth.openai.com'
@@ -15,6 +16,9 @@ const networkScope = new AsyncLocalStorage()
 let activeScopes = 0
 let baseFetch
 let scopedFetch
+let baseWebSocket
+let scopedWebSocket
+let activeWebSocketScopes = 0
 
 function normalizeProxy(raw) {
   if (typeof raw !== 'string' || raw.trim() === '') return undefined
@@ -144,6 +148,32 @@ export function fetchThroughProxy(input, init, proxyUrl) {
   })
 }
 
+function createScopedWebSocketConstructor(WebSocketImpl = WebSocket) {
+  return class CodexScopedWebSocket extends WebSocketImpl {
+    constructor(url, protocolsOrOptions) {
+      const target = new URL(url.toString())
+      const scope = networkScope.getStore()
+      const route = scope?.webSocketRoute
+      const isCodex = target.hostname === CODEX_SUBSCRIPTION_HOST
+
+      let protocols
+      let webSocketOptions = {}
+      if (typeof protocolsOrOptions === 'string' || Array.isArray(protocolsOrOptions)) {
+        protocols = protocolsOrOptions
+      } else if (protocolsOrOptions && typeof protocolsOrOptions === 'object') {
+        webSocketOptions = { ...protocolsOrOptions }
+      }
+
+      if (isCodex && route?.url) {
+        webSocketOptions.agent = new HttpsProxyAgent(route.url)
+      }
+
+      if (protocols === undefined) super(url, webSocketOptions)
+      else super(url, protocols, webSocketOptions)
+    }
+  }
+}
+
 export async function withCodexNetwork(run, options = {}) {
   if (activeScopes === 0) {
     baseFetch = globalThis.fetch
@@ -166,14 +196,38 @@ export async function withCodexNetwork(run, options = {}) {
     globalThis.fetch = scopedFetch
   }
   activeScopes += 1
+
   const scope = {
     options,
     allowedHosts: options.hosts ?? CODEX_HOSTS,
     resolved: new Map(),
+    webSocketRoute: undefined,
   }
+
+  const enableWebSocket = options.webSocket === true
+  if (enableWebSocket) {
+    const target = new URL(`https://${CODEX_SUBSCRIPTION_HOST}/backend-api/codex/responses`)
+    scope.webSocketRoute = await resolveCodexProxy({ ...options, target })
+    options.onRoute?.(scope.webSocketRoute.source)
+    if (activeWebSocketScopes === 0) {
+      baseWebSocket = globalThis.WebSocket
+      scopedWebSocket = createScopedWebSocketConstructor(options.WebSocketImpl ?? WebSocket)
+      globalThis.WebSocket = scopedWebSocket
+    }
+    activeWebSocketScopes += 1
+  }
+
   try {
     return await networkScope.run(scope, run)
   } finally {
+    if (enableWebSocket) {
+      activeWebSocketScopes -= 1
+      if (activeWebSocketScopes === 0) {
+        if (globalThis.WebSocket === scopedWebSocket) globalThis.WebSocket = baseWebSocket
+        baseWebSocket = undefined
+        scopedWebSocket = undefined
+      }
+    }
     activeScopes -= 1
     if (activeScopes === 0) {
       if (globalThis.fetch === scopedFetch) globalThis.fetch = baseFetch
@@ -208,7 +262,11 @@ export function createCodexNetworkTransport(options = {}) {
     let route = attempts.get(area)?.route ?? 'direct'
     let routed = false
     try {
-      const value = await withCodexNetwork(operation, { ...options, onRoute: source => { route = source; routed = true } })
+      const value = await withCodexNetwork(operation, {
+        ...options,
+        webSocket: area === 'model',
+        onRoute: source => { route = source; routed = true },
+      })
       if (value instanceof Response && !value.ok) {
         attempts.set(area, { status: 'failed', stage: 'http', code: 'http-error', httpStatus: value.status, route, elapsed: elapsedBucket(now() - startedAt) })
       } else if (routed || value instanceof Response) {
