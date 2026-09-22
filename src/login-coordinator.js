@@ -320,11 +320,16 @@ export class CodexLoginCoordinator {
 
   async schedulerStatus() {
     if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
+    let testAccountId = this.getTestAccountId()
+    if (testAccountId === undefined) {
+      testAccountId = await this.accountVault.activeId()
+      if (testAccountId !== undefined) this.setTestAccountId(testAccountId)
+    }
     return {
       config: await this.getSchedulerConfig(),
       accounts: await this.accountVault.list(),
       runtime: this.scheduler?.snapshot?.() ?? { bindings: 0, cooldowns: [] },
-      testAccountId: this.getTestAccountId(),
+      testAccountId,
     }
   }
 
