@@ -27,7 +27,7 @@ import { inheritedOriginalImageRef } from './image-original-contract.js'
 import { createSubscriptionDiagnostics } from './diagnostics.js'
 import { CodexAccountScheduler, ScheduledCodexAdapter } from './account-scheduler.js'
 import { createAccountUsageService } from './account-usage.js'
-import { ACCOUNT_ROUTING_MODE_FIELD, ACCOUNT_ROUTING_MODE_NATIVE, CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeAccountRoutingMode, normalizeQuickQuotaMode, normalizeOutputVerbosity, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
+import { ACCOUNT_ROUTING_MODE_FIELD, ACCOUNT_ROUTING_MODE_NATIVE, CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeAccountRoutingMode, normalizeQuickQuotaMode, normalizeOutputVerbosity, normalizeSchedulerStrategy, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, SCHEDULER_STRATEGY_FIELD, SCHEDULER_SESSION_AFFINITY_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
 import { createCodexUsageReader } from './usage.js'
 import { createQuotaForecastReader } from './quota-forecast.js'
 import { QuotaForecastStateStore } from './quota-forecast-store.js'
@@ -118,7 +118,13 @@ export function apply(ctx) {
       ? nativeTestAccountId
       : undefined,
   })
-  const scheduler = accountVault === undefined ? undefined : new CodexAccountScheduler(accountVault)
+  const schedulerConfig = () => ({
+    strategy: normalizeSchedulerStrategy(settings.get()[SCHEDULER_STRATEGY_FIELD]),
+    sessionAffinity: settings.get()[SCHEDULER_SESSION_AFFINITY_FIELD] !== false,
+  })
+  const scheduler = accountVault === undefined ? undefined : new CodexAccountScheduler(accountVault, {
+    resolveConfig: schedulerConfig,
+  })
   const baseProvider = openaiCodexProvider()
   let resolveAuth = async () => undefined
   const modelCatalog = createOfficialModelCatalog({
@@ -282,6 +288,11 @@ export function apply(ctx) {
     scheduler,
     getTestAccountId: () => nativeTestAccountId,
     setTestAccountId: id => { nativeTestAccountId = id },
+    getSchedulerConfig: schedulerConfig,
+    updateSchedulerConfig: patch => settings.update({
+      ...(patch.strategy === undefined ? {} : { [SCHEDULER_STRATEGY_FIELD]: patch.strategy }),
+      ...(patch.sessionAffinity === undefined ? {} : { [SCHEDULER_SESSION_AFFINITY_FIELD]: patch.sessionAffinity }),
+    }),
   })
   const baseUsageReader = createCodexUsageReader({
     getAuth: resolveAuth,
