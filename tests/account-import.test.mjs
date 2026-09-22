@@ -92,3 +92,22 @@ test('imports many CPA JSON files from one ZIP', () => {
   const accounts = parseAccountImport({ name: 'accounts.zip', encoded: zip.toString('base64') })
   assert.deepEqual(accounts.map(account => account.credential.refresh).sort(), ['refresh-a', 'refresh-b'])
 })
+
+
+test('imports account id from CPA metadata and from the official access-token claim', () => {
+  const direct = parseAccountImport({
+    name: 'direct.json',
+    encoded: Buffer.from(JSON.stringify(cpa('direct', { account_id: 'acc-direct' }))).toString('base64'),
+  })
+  assert.equal(direct[0].credential.accountId, 'acc-direct')
+
+  const jwtPayload = Buffer.from(JSON.stringify({
+    'https://api.openai.com/auth': { chatgpt_account_id: 'acc-jwt' },
+  })).toString('base64url')
+  const jwt = cpa('jwt', { access_token: `header.${jwtPayload}.signature` })
+  const fromJwt = parseAccountImport({
+    name: 'jwt.json',
+    encoded: Buffer.from(JSON.stringify(jwt)).toString('base64'),
+  })
+  assert.equal(fromJwt[0].credential.accountId, 'acc-jwt')
+})
