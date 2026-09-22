@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { PendingOAuthCredentialStore } from './account-vault.js'
 
 const PROVIDER = 'openai-codex'
@@ -39,6 +40,7 @@ function parseOAuthCredential(value) {
  */
 export class DshOAuthCredentialStore {
   #chains = new Map()
+  #requestAccount = new AsyncLocalStorage()
 
   constructor(credentials, ref, legacyRefs = [], options = {}) {
     if (credentials === undefined || credentials === null) {
@@ -76,7 +78,10 @@ export class DshOAuthCredentialStore {
     assertProvider(providerId)
     abortIfNeeded(options)
     if (this.vault !== undefined) {
-      const current = await this.vault.readActive()
+      const scopedAccount = this.#requestAccount.getStore()
+      const current = scopedAccount === undefined
+        ? await this.vault.readActive()
+        : await this.vault.read(scopedAccount)
       if (current === undefined) return undefined
       return this.expirySkewMs === 0 ? current : { ...current, expires: current.expires - this.expirySkewMs }
     }
@@ -113,7 +118,11 @@ export class DshOAuthCredentialStore {
   modify(providerId, update, options) {
     return this.#enqueue(providerId, async () => {
       if (this.vault !== undefined) {
-        const next = await this.vault.modifyActive(async current => {
+        const scopedAccount = this.#requestAccount.getStore()
+        const modify = scopedAccount === undefined
+          ? operation => this.vault.modifyActive(operation)
+          : operation => this.vault.modify(scopedAccount, operation)
+        const next = await modify(async current => {
           const visible = current === undefined || this.expirySkewMs === 0
             ? current
             : { ...current, expires: current.expires - this.expirySkewMs }
@@ -133,6 +142,11 @@ export class DshOAuthCredentialStore {
       abortIfNeeded(options)
       return clone(validated)
     }, options)
+  }
+
+  withAccount(id, operation) {
+    if (this.vault === undefined || typeof id !== 'string' || id.length === 0) return operation()
+    return this.#requestAccount.run(id, operation)
   }
 
   delete(providerId, options) {
