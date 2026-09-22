@@ -193,14 +193,18 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
   }
   const emailVisibleForAccount = emailVisible && emailVisibilityKey === accountVisibilityKey
   return <div className="codexSubscriptionCard">
+    <input ref={importRef} type="file" hidden multiple accept=".json,.zip,application/json,application/zip" onChange={importAccounts} />
     <div className="codexSubscriptionAccountRow">
       <div className="codexSubscriptionStatus" role="status" aria-live="polite"><span className="codexSubscriptionDot" data-state={accountReady ? signedIn ? 'connected' : 'disconnected' : 'loading'} aria-hidden="true" />{accountReady ? signedIn ? t('connected') : t('disconnected') : t('accountLoading')}</div>
       <div className="codexSubscriptionActions">{signedIn ? <>
-        <input ref={importRef} type="file" hidden multiple accept=".json,.zip,application/json,application/zip" onChange={importAccounts} />
         <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => importRef.current?.click()}>导入账号 / ZIP</Button>
         <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => { setFlow(undefined); setAdding(true) }}>{t('addAccount')}</Button>
         <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={logout}>{t('signOutAll')}</Button>
-      </> : accountReady && (flow === undefined || ['failed', 'cancelled'].includes(flow.phase)) ? <><Button type="button" variant="primary" disabled={busy} onClick={() => begin('browser')}>{t('browserLogin')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => begin('device_code')}>{t('deviceLogin')}</Button></> : null}</div>
+      </> : accountReady && (flow === undefined || ['failed', 'cancelled'].includes(flow.phase)) ? <>
+        <Button type="button" variant="outline" disabled={busy} onClick={() => importRef.current?.click()}>导入账号 / ZIP</Button>
+        <Button type="button" variant="primary" disabled={busy} onClick={() => begin('browser')}>{t('browserLogin')}</Button>
+        <Button type="button" variant="outline" disabled={busy} onClick={() => begin('device_code')}>{t('deviceLogin')}</Button>
+      </> : null}</div>
     </div>
     {signedIn && scheduler !== undefined && accounts.length > 1 ? <div className="codexSubscriptionFlow">
       <div className="codexSubscriptionActions">
