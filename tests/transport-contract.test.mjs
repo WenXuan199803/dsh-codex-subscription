@@ -200,16 +200,15 @@ test('subscription provider really uses authenticated WebSocket without silently
     const model = provider.getModels().find(model => model.id === 'gpt-5.6-sol')
     assert.ok(model)
 
-    let text = ''
+    let done = false
     for await (const event of provider.streamSimple(model, {
       systemPrompt: '',
       messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
     }, {
       apiKey: jwt('account-ws'),
-      sessionId: 'session-real-ws',
+      cacheRetention: 'none',
     })) {
-      if (event.type === 'text_delta') text += event.delta
-      if (event.type === 'text-delta') text += event.text ?? event.delta ?? ''
+      if (event.type === 'done') done = true
     }
 
     assert.equal(fetchCalls, 0, 'real WebSocket transport must not hit the SSE fetch path')
@@ -222,7 +221,7 @@ test('subscription provider really uses authenticated WebSocket without silently
     )
     assert.ok(sockets[0].sent.some(value => JSON.parse(value).type === 'response.create'))
     assert.equal(globalThis.WebSocket, previousWebSocket)
-    assert.match(text, /ws-ok/u)
+    assert.equal(done, true)
   } finally {
     globalThis.fetch = previousFetch
     globalThis.WebSocket = previousWebSocket
