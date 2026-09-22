@@ -470,8 +470,8 @@ test('generated Codex images use a DSH-tokenized native viewer across supported 
 })
 
 
-test('account UI exposes unambiguous A/B test state and per-account test selection', () => {
-  const source = readFileSync(new URL('../src/client-account.jsx', import.meta.url), 'utf8')
+test('account UI exposes unambiguous A/B test state and per-account test selection', async () => {
+  const source = await read('src/client-account.jsx')
   assert.match(source, /当前链路：原生直通/u)
   assert.match(source, /当前链路：多账号调度/u)
   assert.match(source, /当前测试账号/u)
