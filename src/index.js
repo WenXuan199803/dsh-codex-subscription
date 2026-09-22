@@ -100,6 +100,7 @@ export function apply(ctx) {
   const searchProvider = createSearchProviderSwitcher(ctx.loader)
   const network = createCodexNetworkTransport()
   const originalImages = new OriginalImageStore()
+  let nativeTestAccountId
   const accountVault = ACCOUNT_VAULT_KEY !== undefined
     && typeof ctx.credentials.readRecord === 'function'
     && typeof ctx.credentials.modifyRecord === 'function'
@@ -113,6 +114,9 @@ export function apply(ctx) {
   const store = new DshOAuthCredentialStore(ctx.credentials, CREDENTIAL_REF, [LEGACY_CREDENTIAL_REF], {
     expirySkewMs: OAUTH_EXPIRY_SKEW_MS,
     vault: accountVault,
+    fallbackAccountId: () => normalizeAccountRoutingMode(settings.get()[ACCOUNT_ROUTING_MODE_FIELD]) === ACCOUNT_ROUTING_MODE_NATIVE
+      ? nativeTestAccountId
+      : undefined,
   })
   const scheduler = accountVault === undefined ? undefined : new CodexAccountScheduler(accountVault)
   const baseProvider = openaiCodexProvider()
@@ -273,7 +277,12 @@ export function apply(ctx) {
       return loginModels
     },
   })
-  const coordinator = new CodexLoginCoordinator(auth, { accountVault, scheduler })
+  const coordinator = new CodexLoginCoordinator(auth, {
+    accountVault,
+    scheduler,
+    getTestAccountId: () => nativeTestAccountId,
+    setTestAccountId: id => { nativeTestAccountId = id },
+  })
   const baseUsageReader = createCodexUsageReader({
     getAuth: resolveAuth,
     readCredential: options => store.read(PROVIDER, options),
