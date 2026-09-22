@@ -222,6 +222,12 @@ test('subscription provider really uses authenticated WebSocket without silently
     assert.ok(sockets[0].sent.some(value => JSON.parse(value).type === 'response.create'))
     assert.equal(globalThis.WebSocket, previousWebSocket)
     assert.equal(done, true)
+    assert.deepEqual(network.snapshot().model, {
+      status: 'ok',
+      route: 'direct',
+      elapsed: 'under-1s',
+      transport: 'websocket',
+    })
   } finally {
     globalThis.fetch = previousFetch
     globalThis.WebSocket = previousWebSocket
