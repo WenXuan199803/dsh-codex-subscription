@@ -18,6 +18,6 @@ test('bundle leaves the DSH web row intact and adds no paid fallback', async () 
   assert.doesNotMatch(rows, /- id:\s*web|searchProvider:/u)
   assert.deepEqual(
     [...rows.matchAll(/^\s+name:\s+'([^']+)'$/gmu)].map(match => match[1]),
-    ['dsh-codex-subscription'],
+    ['dsh-codex-subscription-sssv4'],
   )
 })
