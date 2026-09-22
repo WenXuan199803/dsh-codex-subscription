@@ -6,6 +6,7 @@ import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 
 import { DshOAuthCredentialStore } from '../src/credential-store.js'
+import { createCodexNetworkTransport } from '../src/oauth-network.js'
 import { createModels, openaiCodexSubscriptionProvider } from '../src/pi-ai-runtime.js'
 import {
   CONTEXT_MODE_CUSTOM,
@@ -130,6 +131,101 @@ test('DSH PiAiAdapter can execute the OAuth-only Codex provider with a refreshed
     assert.deepEqual(new Set(networkAreas), new Set(['model']))
   } finally {
     globalThis.fetch = previousFetch
+  }
+})
+
+test('subscription provider really uses authenticated WebSocket without silently falling back to SSE', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWebSocket = globalThis.WebSocket
+  let fetchCalls = 0
+  const sockets = []
+
+  class FakeWebSocket {
+    constructor(url, options) {
+      this.url = String(url)
+      this.options = options
+      this.readyState = 1
+      this.listeners = new Map()
+      this.sent = []
+      sockets.push(this)
+      queueMicrotask(() => this.emit('open', {}))
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) ?? new Set()
+      listeners.add(listener)
+      this.listeners.set(type, listeners)
+    }
+
+    removeEventListener(type, listener) {
+      this.listeners.get(type)?.delete(listener)
+    }
+
+    emit(type, event) {
+      for (const listener of this.listeners.get(type) ?? []) listener(event)
+    }
+
+    send(value) {
+      this.sent.push(String(value))
+      const events = [
+        { type: 'response.created', response: { id: 'resp_ws' } },
+        { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_ws', role: 'assistant', content: [] } },
+        { type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: 'ws-ok' },
+        { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_ws', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'ws-ok', annotations: [] }] } },
+        { type: 'response.done', response: { id: 'resp_ws', status: 'completed', output: [], usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } },
+      ]
+      for (const event of events) queueMicrotask(() => this.emit('message', { data: JSON.stringify(event) }))
+    }
+
+    close(code = 1000, reason = 'done') {
+      this.readyState = 3
+      queueMicrotask(() => this.emit('close', { code, reason, wasClean: true }))
+    }
+  }
+
+  globalThis.fetch = async () => {
+    fetchCalls += 1
+    throw new Error('SSE fallback must not be used by this WebSocket contract test')
+  }
+
+  try {
+    const network = createCodexNetworkTransport({
+      WebSocketImpl: FakeWebSocket,
+      env: {},
+    })
+    const provider = openaiCodexSubscriptionProvider({
+      resolveTransport: () => 'websocket',
+      runNetwork: network.run,
+    })
+    const model = provider.getModels().find(model => model.id === 'gpt-5.6-sol')
+    assert.ok(model)
+
+    let text = ''
+    for await (const event of provider.streamSimple(model, {
+      systemPrompt: '',
+      messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
+    }, {
+      apiKey: jwt('account-ws'),
+      sessionId: 'session-real-ws',
+    })) {
+      if (event.type === 'text_delta') text += event.delta
+      if (event.type === 'text-delta') text += event.text ?? event.delta ?? ''
+    }
+
+    assert.equal(fetchCalls, 0, 'real WebSocket transport must not hit the SSE fetch path')
+    assert.equal(sockets.length, 1)
+    assert.equal(sockets[0].url, 'wss://chatgpt.com/backend-api/codex/responses')
+    assert.match(String(sockets[0].options?.headers?.authorization ?? sockets[0].options?.headers?.Authorization ?? ''), /^Bearer /u)
+    assert.equal(
+      sockets[0].options?.headers?.['chatgpt-account-id'] ?? sockets[0].options?.headers?.['ChatGPT-Account-ID'],
+      'account-ws',
+    )
+    assert.ok(sockets[0].sent.some(value => JSON.parse(value).type === 'response.create'))
+    assert.equal(globalThis.WebSocket, previousWebSocket)
+    assert.match(text, /ws-ok/u)
+  } finally {
+    globalThis.fetch = previousFetch
+    globalThis.WebSocket = previousWebSocket
   }
 })
 
