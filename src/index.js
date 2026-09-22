@@ -25,6 +25,7 @@ import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL } from './image-models.js'
 import { OriginalImageStore } from './image-original-store.js'
 import { inheritedOriginalImageRef } from './image-original-contract.js'
 import { createSubscriptionDiagnostics } from './diagnostics.js'
+import { CodexAccountScheduler, ScheduledCodexAdapter } from './account-scheduler.js'
 import { CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeQuickQuotaMode, normalizeOutputVerbosity, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
 import { createCodexUsageReader } from './usage.js'
 import { createQuotaForecastReader } from './quota-forecast.js'
@@ -112,6 +113,7 @@ export function apply(ctx) {
     expirySkewMs: OAUTH_EXPIRY_SKEW_MS,
     vault: accountVault,
   })
+  const scheduler = accountVault === undefined ? undefined : new CodexAccountScheduler(accountVault)
   const baseProvider = openaiCodexProvider()
   let resolveAuth = async () => undefined
   const modelCatalog = createOfficialModelCatalog({
@@ -224,7 +226,8 @@ export function apply(ctx) {
     auth: adapterAuth,
     resolveAttachments: () => ctx.get?.('attachments'),
   })
-  ctx.llm.registerAdapter([PROVIDER], adapter)
+  const registeredAdapter = scheduler === undefined ? adapter : new ScheduledCodexAdapter(adapter, scheduler, store)
+  ctx.llm.registerAdapter([PROVIDER], registeredAdapter)
   const currentAgent = () => ctx.get?.('agents')?.currentInitiator?.()
   const codexSearch = createCodexSearchProvider({
     resolvePreferences: () => readCapabilitySettings(settings.get()),
@@ -264,7 +267,7 @@ export function apply(ctx) {
       return loginModels
     },
   })
-  const coordinator = new CodexLoginCoordinator(auth)
+  const coordinator = new CodexLoginCoordinator(auth, { accountVault, scheduler })
   const baseUsageReader = createCodexUsageReader({
     getAuth: resolveAuth,
     readCredential: options => store.read(PROVIDER, options),
