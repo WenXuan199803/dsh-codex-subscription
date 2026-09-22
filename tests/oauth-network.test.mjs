@@ -137,6 +137,36 @@ test('Codex network adapts only official auth and subscription hosts to an exist
   }
 })
 
+test('Codex model scope installs a header-capable proxy-aware WebSocket and restores the host constructor', async () => {
+  const original = globalThis.WebSocket
+  const calls = []
+  class FakeWebSocket {
+    constructor(url, options) {
+      calls.push({ url: String(url), options })
+    }
+  }
+
+  try {
+    await withCodexNetwork(async () => {
+      new globalThis.WebSocket('wss://chatgpt.com/backend-api/codex/responses', {
+        headers: { authorization: 'Bearer test' },
+      })
+    }, {
+      webSocket: true,
+      WebSocketImpl: FakeWebSocket,
+      env: { HTTPS_PROXY: 'http://127.0.0.1:7890' },
+    })
+
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].url, 'wss://chatgpt.com/backend-api/codex/responses')
+    assert.equal(calls[0].options.headers.authorization, 'Bearer test')
+    assert.equal(calls[0].options.agent?.constructor?.name, 'HttpsProxyAgent')
+    assert.equal(globalThis.WebSocket, original)
+  } finally {
+    globalThis.WebSocket = original
+  }
+})
+
 test('network diagnostics keep actionable request failures without proxy addresses', async () => {
   const transport = createCodexNetworkTransport({
     env: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' },
