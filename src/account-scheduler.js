@@ -175,6 +175,7 @@ export class ScheduledCodexAdapter extends LlmAdapter {
     this.store = store
   }
 
+  current(...args) { return typeof this.base.current === 'function' ? this.base.current(...args) : undefined }
   providerInfo(provider) { return this.base.providerInfo(provider) }
   providerRetryPolicy(provider) { return this.base.providerRetryPolicy(provider) }
   imageRequestPricing(provider, model) { return this.base.imageRequestPricing(provider, model) }
