@@ -150,6 +150,11 @@ export class DshOAuthCredentialStore {
     return this.#requestAccount.run(id, operation)
   }
 
+  currentAccountId() {
+    if (this.vault === undefined) return undefined
+    return this.#requestAccount.getStore() ?? this.fallbackAccountId()
+  }
+
   delete(providerId, options) {
     return this.#enqueue(providerId, async () => {
       if (this.vault !== undefined) {
