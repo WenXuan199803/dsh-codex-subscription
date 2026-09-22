@@ -227,7 +227,8 @@ export function apply(ctx) {
     auth: adapterAuth,
     resolveAttachments: () => ctx.get?.('attachments'),
   })
-  const registeredAdapter = scheduler === undefined ? adapter : new ScheduledCodexAdapter(adapter, scheduler, store)
+  const bypassScheduler = process.env.CODEX_ACCOUNT_POOL_BYPASS === '1'
+  const registeredAdapter = scheduler === undefined || bypassScheduler ? adapter : new ScheduledCodexAdapter(adapter, scheduler, store)
   ctx.llm.registerAdapter([PROVIDER], registeredAdapter)
   const currentAgent = () => ctx.get?.('agents')?.currentInitiator?.()
   const codexSearch = createCodexSearchProvider({
