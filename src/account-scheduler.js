@@ -34,8 +34,9 @@ function classifyFailure(failure = {}) {
     || /invalidated oauth token|invalid(?:ated)? oauth access token/iu.test(message)) {
     return { retryable: true, reason: 'auth', cooldownMs: 60 * 1000 }
   }
-  if ((status === 400 || status === 404)
-    && /model.{0,80}(?:not found|not available|not supported|does not exist|do not have access)/iu.test(message)) {
+  if (['MODEL_NOT_FOUND', 'MODEL_UNAVAILABLE', 'MODEL_ACCESS_DENIED'].includes(code)
+    || ((status === 400 || status === 404)
+      && /model.{0,80}(?:not found|not available|not supported|does not exist|do not have access)/iu.test(message))) {
     return { retryable: true, reason: 'model-access', cooldownMs: 60 * 1000 }
   }
   if ([408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526].includes(status)

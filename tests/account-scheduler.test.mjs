@@ -24,6 +24,7 @@ test('classifies quota and overload failures for account failover', () => {
   assert.equal(classifyFailure({ status: 503, message: 'server_is_overloaded' }).reason, 'transient')
   assert.equal(classifyFailure({ status: 400, message: 'bad request' }).retryable, false)
   assert.equal(classifyFailure({ status: 400, message: 'model gpt-6-sol is not available for this account' }).reason, 'model-access')
+  assert.equal(classifyFailure({ code: 'MODEL_ACCESS_DENIED' }).retryable, true)
 })
 
 test('model resolution waits for the catalog after a bulk import', async () => {
