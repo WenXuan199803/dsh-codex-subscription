@@ -173,6 +173,9 @@ test('re-import skips an identical credential and falls back to email only when 
     added: 0, updated: 1, duplicates: 0, total: 1,
   })
 
+  const raw = backend.readRecordRaw('accounts').payload
+  raw.accounts[0].credential.accountId = 'account-stable'
+  await backend.modifyRecord('accounts', () => ({ kind: 'grant', payload: raw }))
   const distinct = { ...oauth('other'), accountId: 'account-other', email: 'same@example.com' }
   assert.deepEqual(await vault.importMany([{ label: 'Other account', credential: distinct }]), {
     added: 1, updated: 0, duplicates: 0, total: 2,
