@@ -289,6 +289,8 @@ test('account settings expose a fixed-account diagnostic override and do not exp
   assert.match(source, /固定账号（测试）/u)
   assert.match(source, /fixedAccountId/u)
   assert.match(source, /不轮询、不自动切号/u)
+  assert.match(source, /Object\.hasOwn\(patch, 'fixedAccountId'\)/u)
+  assert.match(source, /const status = await call\('status'\)/u)
   assert.doesNotMatch(source, /option value="weighted-round-robin"/u)
   assert.doesNotMatch(source, /优先级|权重/u)
 })

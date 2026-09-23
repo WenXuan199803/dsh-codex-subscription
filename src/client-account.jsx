@@ -210,8 +210,15 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
   }
   const updateScheduler = patch => {
     setBusy(true); setError(undefined)
-    void call('scheduler/update', patch).then(setScheduler)
-      .catch(error => setError(error instanceof Error ? error.message : t('failed')))
+    void call('scheduler/update', patch).then(async next => {
+      setScheduler(next)
+      if (Object.hasOwn(patch, 'fixedAccountId')) {
+        const status = await call('status')
+        setAccount(status)
+        loadAccountUsage(true)
+        notifyQuickQuota()
+      }
+    }).catch(error => setError(error instanceof Error ? error.message : t('failed')))
       .finally(() => setBusy(false))
   }
   const importAccounts = event => {
