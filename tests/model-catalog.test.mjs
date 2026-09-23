@@ -5,6 +5,7 @@ import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 
 import { CODEX_MODELS_URL, createOfficialModelCatalog, parseOfficialModelCatalog } from '../src/model-catalog.js'
 import { openaiCodexProvider, openaiCodexSubscriptionProvider } from '../src/pi-ai-runtime.js'
+import { ScheduledCodexAdapter } from '../src/account-scheduler.js'
 import { contextModelGroups } from '../src/settings-contract.js'
 
 const base = [{
@@ -330,4 +331,28 @@ test('a requested model is found on the second account before resolution', async
   })
   await catalog.ensure('gpt-6-sol')
   assert.equal(catalog.getModels(base)[0].id, 'gpt-6-sol')
+})
+
+test('the real pi-ai adapter prepares GPT-6-Sol while a cold catalog is still loading', async () => {
+  let reply
+  const catalog = createOfficialModelCatalog({
+    baseModels: () => openaiCodexProvider().getModels(),
+    getAuth: async () => ({ auth: { apiKey: 'test-token' } }),
+    readCredential: async () => ({ type: 'oauth', accountId: 'test-account' }),
+    fetch: async () => new Promise(resolve => { reply = resolve }),
+  })
+  const provider = openaiCodexSubscriptionProvider({ catalog })
+  const baseAdapter = new PiAiAdapter({
+    profiles: () => new Map([['openai-codex', {
+      provider: 'openai-codex', displayName: 'ChatGPT subscription',
+      piProvider: provider, configuredMaxTokens: new Map(), modelErrors: new Map(),
+    }]]),
+    resolveApiKey: async () => 'test-token',
+  })
+  const adapter = new ScheduledCodexAdapter(baseAdapter, undefined, undefined, catalog)
+  const preparing = adapter.prepareCall('openai-codex', 'gpt-6-sol')
+  for (let i = 0; i < 10 && reply === undefined; i++) await Promise.resolve()
+  assert.equal(typeof reply, 'function')
+  reply(Response.json({ models: [remote({ slug: 'gpt-6-sol' })] }))
+  assert.equal((await preparing).model.id, 'gpt-6-sol')
 })
