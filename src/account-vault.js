@@ -334,7 +334,11 @@ export class DshOAuthAccountVault {
           ...patch,
           ...(fixedAccountId === null ? { fixedAccountId: undefined } : {}),
         })
-        return { ...current, scheduler }
+        return {
+          ...current,
+          ...(typeof fixedAccountId === 'string' ? { activeId: fixedAccountId } : {}),
+          scheduler,
+        }
       })
       return normalizeScheduler(payload.scheduler)
     })

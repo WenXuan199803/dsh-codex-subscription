@@ -192,6 +192,8 @@ test('fixed account selection persists in the vault and clears when that account
   await vault.add('Two', oauth('two'))
   await vault.updateScheduler({ fixedAccountId: 'local-1' })
   assert.equal((await vault.scheduler()).fixedAccountId, 'local-1')
+  assert.equal(await vault.activeId(), 'local-1', 'fixed mode also becomes the active identity for search, images and other subscription tools')
+  assert.deepEqual(await vault.readActive(), oauth('one'))
   await assert.rejects(() => vault.updateScheduler({ fixedAccountId: 'missing' }), /fixed account/i)
   await vault.configure('local-1', { enabled: false })
   assert.equal((await vault.scheduler()).fixedAccountId, undefined)
