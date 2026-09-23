@@ -94,3 +94,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+## OpenAI Codex request protocol adaptation
+
+The Responses Lite envelope and tool namespace adaptation in `src/codex-request.js`
+follow `openai/codex` commit `b7add4df3d95e2d41249e54d3c3a1bd14680848a`,
+`codex-rs/core/src/client.rs` and `codex-rs/tools/src/tool_spec.rs`.
+This JavaScript adaptation is modified from the Rust design to preserve DSH's
+message, tool and account ownership. OpenAI Codex, Copyright 2025 OpenAI,
+is licensed under Apache License 2.0; see the included `CODEX-LICENSE.txt`.

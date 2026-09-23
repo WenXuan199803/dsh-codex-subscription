@@ -2,6 +2,8 @@
 // The exact peer version makes a DSH update fail visibly until this seam is
 // re-audited instead of silently changing authentication or cache semantics.
 import { openaiCodexProvider as createOpenAICodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
+import { officialCodexRequest } from './codex-request.js'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import {
   CONTEXT_MODE_CUSTOM,
   CONTEXT_MODE_EXTENDED,
@@ -74,6 +76,9 @@ export function openaiCodexSubscriptionProvider({
       ...(sessionId === undefined ? {} : { sessionId }),
       ...(textVerbosity === undefined ? {} : { textVerbosity }),
       ...(fast ? { serviceTier: FAST_SERVICE_TIER } : {}),
+      ...(metadata?.useResponsesLite === true ? {
+        headers: { ...options.headers, 'x-openai-internal-codex-responses-lite': 'true' },
+      } : {}),
       async onPayload(payload, requestModel) {
         const preferred = {
           ...payload,
@@ -81,11 +86,11 @@ export function openaiCodexSubscriptionProvider({
           ...(fast ? { service_tier: FAST_SERVICE_TIER } : {}),
         }
         const next = await onPayload?.(preferred, requestModel)
-        return {
+        return officialCodexRequest({
           ...(next ?? preferred),
           ...(textVerbosity === undefined ? {} : { text: { ...((next ?? preferred).text ?? {}), verbosity: textVerbosity } }),
           ...(fast ? { service_tier: FAST_SERVICE_TIER } : {}),
-        }
+        }, metadata)
       },
     }
   }
@@ -102,27 +107,47 @@ export function openaiCodexSubscriptionProvider({
     return { ...model, contextWindow: requested }
   })
   const networkIterable = factory => {
-    let iterator
-    let networkStarted = false
-    const getIterator = () => (iterator ??= factory()[Symbol.asyncIterator]())
-    const firstNetworkOperation = operation => {
-      if (networkStarted) return operation()
-      networkStarted = true
-      return runNetwork('model', operation)
+    let ready, running, finish
+    const start = () => {
+      if (ready) return ready
+      ready = new Promise((resolve, reject) => {
+        running = Promise.resolve().then(() => runNetwork('model', async () => {
+          const completed = new Promise(done => { finish = done })
+          const iterator = (await factory())[Symbol.asyncIterator]()
+          const scoped = AsyncLocalStorage.snapshot()
+          resolve({ iterator, scoped })
+          await completed
+        })).catch(reject)
+      })
+      return ready
+    }
+    const invoke = async (method, value) => {
+      const { iterator, scoped } = await start()
+      try {
+        const result = await scoped(() => iterator[method]?.(value) ?? { done: true, value })
+        if (result.done || method === 'return') { finish(); await running }
+        return result
+      } catch (error) { finish(); await running; throw error }
     }
     return {
       [Symbol.asyncIterator]() { return this },
-      next: value => firstNetworkOperation(() => getIterator().next(value)),
-      return: value => firstNetworkOperation(() => getIterator().return?.(value) ?? Promise.resolve({ done: true, value })),
-      throw: error => firstNetworkOperation(() => getIterator().throw?.(error) ?? Promise.reject(error)),
+      next: value => invoke('next', value),
+      return: value => invoke('return', value),
+      throw: error => invoke('throw', error),
     }
   }
   return Object.freeze({
     ...provider,
     auth: Object.freeze({ ...provider.auth, apiKey: requestToken }),
     getModels,
-    stream: (model, context, options) => networkIterable(() => provider.stream(model, context, withPreferences(model, options))),
-    streamSimple: (model, context, options) => networkIterable(() => provider.streamSimple(model, context, withPreferences(model, options))),
+    stream: (model, context, options) => networkIterable(async () => {
+      await catalog?.ready?.()
+      return provider.stream(model, context, withPreferences(model, options))
+    }),
+    streamSimple: (model, context, options) => networkIterable(async () => {
+      await catalog?.ready?.()
+      return provider.streamSimple(model, context, withPreferences(model, options))
+    }),
   })
 }
 

@@ -35,6 +35,8 @@ No OpenAI API key or Codex CLI. Models, search, quota, and image generation stay
 
 DSH-Portable exposes the same standard plugin command, so the command above also applies there. See below for the complete official npm, update, and uninstall routes.
 
+Requests follow the official model catalog’s Responses / Responses Lite protocol with account-isolated WebSocket continuation. Compare performance with the same account, model, reasoning effort and speed tier; the plugin does not lower model quality to improve speed. See [protocol and measured acceptance](docs/responses-protocol.md).
+
 ## Why this plugin
 
 | Capability | What you get |

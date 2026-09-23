@@ -40,6 +40,10 @@ function visibleModel(value) {
     thinkingLevelMap: reasoningMap(supported),
     supportVerbosity: value.support_verbosity === true,
     defaultVerbosity: ['low', 'medium', 'high'].includes(value.default_verbosity) ? value.default_verbosity : undefined,
+    ...(typeof value.use_responses_lite === 'boolean' ? { useResponsesLite: value.use_responses_lite } : {}),
+    ...(typeof value.supports_reasoning_summary_parameter === 'boolean' ? { supportsReasoningSummary: value.supports_reasoning_summary_parameter } : {}),
+    ...(['none', 'auto', 'concise', 'detailed'].includes(value.default_reasoning_summary) ? { defaultReasoningSummary: value.default_reasoning_summary } : {}),
+    ...(nonEmpty(value.default_reasoning_level) ? { defaultReasoningEffort: value.default_reasoning_level } : {}),
     supportsFast: [...(Array.isArray(value.additional_speed_tiers) ? value.additional_speed_tiers : []),
       ...(Array.isArray(value.service_tiers) ? value.service_tiers.map(tier => tier?.id) : [])]
       .some(tier => tier === 'fast' || tier === 'priority'),
@@ -168,6 +172,13 @@ export function createOfficialModelCatalog(options = {}) {
 
   return Object.freeze({
     refresh,
+    // Credential changes clear the catalog while a refresh is in flight. Do
+    // not let the first turn race that refresh and silently use Pi's legacy
+    // envelope. A failed lookup still retains the existing offline fallback.
+    async ready() {
+      if (models !== undefined) return
+      try { await refresh() } catch { /* status() exposes the failed lookup */ }
+    },
     getModels: fallback => models ?? fallback,
     metadata: modelId => metadata.get(modelId),
     revision: () => revision,

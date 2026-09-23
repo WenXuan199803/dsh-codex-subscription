@@ -2,8 +2,8 @@ import { PACKAGE_VERSION } from './version.js'
 
 const requestAreas = new Set(['login', 'model', 'catalog', 'quota', 'quota-reset', 'search', 'image'])
 const statuses = new Set(['ok', 'failed'])
-const stages = new Set(['transport', 'http'])
-const codes = new Set(['timeout', 'dns', 'tls', 'connection', 'network', 'http-error'])
+const stages = new Set(['transport', 'http', 'provider'])
+const codes = new Set(['timeout', 'dns', 'tls', 'connection', 'network', 'http-error', 'provider-error'])
 const routes = new Set(['direct', 'environment', 'system', 'bypass'])
 const transports = new Set(['websocket', 'sse'])
 const fallbacks = new Set(['websocket-to-sse'])
@@ -33,6 +33,10 @@ function safeRequests(network) {
       ...(Number.isSafeInteger(value.firstEventMs) && value.firstEventMs >= 0 && value.firstEventMs <= 3_600_000 ? { firstEventMs: value.firstEventMs } : {}),
       ...(Number.isSafeInteger(value.firstTextMs) && value.firstTextMs >= 0 && value.firstTextMs <= 3_600_000 ? { firstTextMs: value.firstTextMs } : {}),
       ...(Number.isSafeInteger(value.outputTokens) && value.outputTokens >= 0 && value.outputTokens <= 10_000_000 ? { outputTokens: value.outputTokens } : {}),
+      ...(Number.isSafeInteger(value.reasoningTokens) && value.reasoningTokens >= 0 && value.reasoningTokens <= 10_000_000 ? { reasoningTokens: value.reasoningTokens } : {}),
+      ...(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(value.reasoningEffort) ? { reasoningEffort: value.reasoningEffort } : {}),
+      ...(typeof value.responsesLite === 'boolean' ? { responsesLite: value.responsesLite } : {}),
+      ...(typeof value.continuation === 'boolean' ? { continuation: value.continuation } : {}),
       ...(Number.isSafeInteger(value.durationMs) && value.durationMs >= 0 && value.durationMs <= 3_600_000 ? { durationMs: value.durationMs } : {}),
       elapsed: value.elapsed,
     }

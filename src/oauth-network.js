@@ -55,9 +55,11 @@ function safeModelEvent(data) {
     const response = event.response
     return {
       type: event.type,
+      ...(['error', 'response.failed'].includes(event.type) ? { failed: true } : {}),
       ...(response && typeof response === 'object' && typeof response.model === 'string' ? { model: response.model } : {}),
       ...(response && typeof response === 'object' && typeof response.service_tier === 'string' ? { serviceTier: response.service_tier } : {}),
       ...(response && typeof response === 'object' && Number.isSafeInteger(response.usage?.output_tokens) ? { outputTokens: response.usage.output_tokens } : {}),
+      ...(Number.isSafeInteger(response?.usage?.output_tokens_details?.reasoning_tokens) ? { reasoningTokens: response.usage.output_tokens_details.reasoning_tokens } : {}),
     }
   } catch {
     return undefined
@@ -225,7 +227,7 @@ function createScopedWebSocketConstructor(WebSocketImpl = WebSocket) {
       if (isCodex && typeof this.addEventListener === 'function') {
         this.addEventListener('message', event => {
           const info = safeModelEvent(event?.data)
-          if (info !== undefined) networkScope.getStore()?.options?.onModelEvent?.(info)
+          if (info !== undefined) this.codexRequestScope?.options?.onModelEvent?.(info)
         })
       }
     }
@@ -234,6 +236,7 @@ function createScopedWebSocketConstructor(WebSocketImpl = WebSocket) {
       const scope = networkScope.getStore()
       if (new URL(this.url).hostname !== CODEX_SUBSCRIPTION_HOST) return super.send(...args)
 
+      this.codexRequestScope = scope
       scope?.options?.onTransport?.('websocket')
       const raw = diagnosticText(args[0])
       if (raw === undefined) return super.send(...args)
@@ -263,6 +266,9 @@ function createScopedWebSocketConstructor(WebSocketImpl = WebSocket) {
         scope?.options?.onModelRequest?.({
           model: typeof request.model === 'string' ? request.model : undefined,
           serviceTier: typeof request.service_tier === 'string' ? request.service_tier : undefined,
+          reasoningEffort: request.reasoning?.effort,
+          responsesLite: request.client_metadata?.ws_request_header_x_openai_internal_codex_responses_lite === 'true',
+          continuation: typeof request.previous_response_id === 'string',
           clientIdentity: CODEX_ORIGINATOR,
         })
         return super.send(JSON.stringify(request), ...args.slice(1))
@@ -377,6 +383,8 @@ export function createCodexNetworkTransport(options = {}) {
     let firstEventMs
     let firstTextMs
     let outputTokens
+    let reasoningTokens, reasoningEffort, responsesLite, continuation
+    let providerFailed = false
     const safeElapsed = () => Math.max(0, now() - startedAt)
     const transportFields = () => ({
       ...(transport === undefined ? {} : { transport }),
@@ -389,6 +397,10 @@ export function createCodexNetworkTransport(options = {}) {
       ...(firstEventMs === undefined ? {} : { firstEventMs }),
       ...(firstTextMs === undefined ? {} : { firstTextMs }),
       ...(outputTokens === undefined ? {} : { outputTokens }),
+      ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      ...(responsesLite === undefined ? {} : { responsesLite }),
+      ...(continuation === undefined ? {} : { continuation }),
       ...(area === 'model' ? { durationMs: safeElapsed() } : {}),
     })
     try {
@@ -406,20 +418,27 @@ export function createCodexNetworkTransport(options = {}) {
           if (typeof info?.clientIdentity === 'string') clientIdentity = info.clientIdentity
           if (typeof info?.model === 'string') requestedModel = info.model
           if (typeof info?.serviceTier === 'string') requestedServiceTier = info.serviceTier
+          reasoningEffort = info?.reasoningEffort
+          responsesLite = info?.responsesLite
+          continuation = info?.continuation
           options.onModelRequest?.(info)
         },
         onModelEvent: info => {
+          if (info?.failed) providerFailed = true
           const elapsed = safeElapsed()
           if (firstEventMs === undefined) firstEventMs = elapsed
           if (info?.type === 'response.output_text.delta' && firstTextMs === undefined) firstTextMs = elapsed
           if (typeof info?.model === 'string') serverModel = info.model
           if (typeof info?.serviceTier === 'string') serverServiceTier = info.serviceTier
           if (Number.isSafeInteger(info?.outputTokens) && info.outputTokens >= 0) outputTokens = info.outputTokens
+          if (Number.isSafeInteger(info?.reasoningTokens)) reasoningTokens = info.reasoningTokens
           options.onModelEvent?.(info)
         },
       })
       if (value instanceof Response && !value.ok) {
         attempts.set(area, { status: 'failed', stage: 'http', code: 'http-error', httpStatus: value.status, route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
+      } else if (providerFailed) {
+        attempts.set(area, { status: 'failed', stage: 'provider', code: 'provider-error', route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
       } else if (routed || value instanceof Response) {
         attempts.set(area, { status: 'ok', route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
       }
