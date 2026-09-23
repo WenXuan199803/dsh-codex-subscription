@@ -16,9 +16,13 @@ function normalizeWeight(value) {
 }
 
 function normalizeScheduler(value = {}) {
+  const fixedAccountId = typeof value?.fixedAccountId === 'string' && value.fixedAccountId.length > 0
+    ? value.fixedAccountId
+    : undefined
   return {
     strategy: SCHEDULER_STRATEGIES.has(value?.strategy) ? value.strategy : 'fill-first',
     sessionAffinity: value?.sessionAffinity !== false,
+    ...(fixedAccountId === undefined ? {} : { fixedAccountId }),
   }
 }
 
@@ -313,12 +317,25 @@ export class DshOAuthAccountVault {
     return this.#enqueue(async () => {
       const strategy = patch.strategy
       const sessionAffinity = patch.sessionAffinity
+      const fixedAccountId = patch.fixedAccountId
       if (strategy !== undefined && !SCHEDULER_STRATEGIES.has(strategy)) throw new Error('Unsupported Codex scheduling strategy')
       if (sessionAffinity !== undefined && typeof sessionAffinity !== 'boolean') throw new Error('Invalid Codex session affinity setting')
-      const payload = await this.#modifyPayload(current => ({
-        ...current,
-        scheduler: normalizeScheduler({ ...current.scheduler, ...patch }),
-      }))
+      if (fixedAccountId !== undefined && fixedAccountId !== null
+        && (typeof fixedAccountId !== 'string' || fixedAccountId.length === 0)) {
+        throw new Error('Invalid Codex fixed account')
+      }
+      const payload = await this.#modifyPayload(current => {
+        if (typeof fixedAccountId === 'string') {
+          const account = current.accounts.find(candidate => candidate.id === fixedAccountId)
+          if (account === undefined || account.enabled === false) throw new Error('Invalid Codex fixed account')
+        }
+        const scheduler = normalizeScheduler({
+          ...current.scheduler,
+          ...patch,
+          ...(fixedAccountId === null ? { fixedAccountId: undefined } : {}),
+        })
+        return { ...current, scheduler }
+      })
       return normalizeScheduler(payload.scheduler)
     })
   }
@@ -341,7 +358,10 @@ export class DshOAuthAccountVault {
         const activeId = accounts.find(account => account.id === current.activeId)?.enabled === false
           ? accounts.find(account => account.enabled !== false)?.id ?? current.activeId
           : current.activeId
-        return { ...current, activeId, accounts }
+        const scheduler = patch.enabled === false && current.scheduler?.fixedAccountId === id
+          ? normalizeScheduler({ ...current.scheduler, fixedAccountId: undefined })
+          : current.scheduler
+        return { ...current, activeId, accounts, scheduler }
       })
       return payload.accounts.map(account => ({
         id: account.id,
@@ -545,6 +565,9 @@ export class DshOAuthAccountVault {
           ...current,
           activeId: current.activeId === id ? accounts[0].id : current.activeId,
           accounts,
+          scheduler: current.scheduler?.fixedAccountId === id
+            ? normalizeScheduler({ ...current.scheduler, fixedAccountId: undefined })
+            : current.scheduler,
         }
         if (current.legacyAccountId === id) delete next.legacyAccountId
         return next

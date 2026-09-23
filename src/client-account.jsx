@@ -274,11 +274,16 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
     </div>
     {signedIn && scheduler !== undefined && accounts.length > 1 ? <div className="codexSubscriptionFlow">
       <div className="codexSubscriptionActions">
-        <label>调度策略 <select disabled={busy} value={scheduler.config?.strategy ?? 'fill-first'} onChange={event => updateScheduler({ strategy: event.currentTarget.value })}>
+        <label>调度策略 <select disabled={busy || scheduler.config?.fixedAccountId !== undefined} value={scheduler.config?.strategy ?? 'fill-first'} onChange={event => updateScheduler({ strategy: event.currentTarget.value })}>
           <option value="fill-first">依次用满</option>
           <option value="round-robin">轮询</option>
         </select></label>
-        <label><input type="checkbox" disabled={busy} checked={scheduler.config?.sessionAffinity !== false} onChange={event => updateScheduler({ sessionAffinity: event.currentTarget.checked })} /> 同一对话固定账号</label>
+        <label>固定账号（测试） <select disabled={busy} value={scheduler.config?.fixedAccountId ?? ''} onChange={event => updateScheduler({ fixedAccountId: event.currentTarget.value || null })}>
+          <option value="">关闭固定模式</option>
+          {accounts.filter(candidate => candidate.enabled !== false).map(candidate => <option value={candidate.id} key={candidate.id}>{candidate.email ? maskEmail(candidate.email) : candidate.label}</option>)}
+        </select></label>
+        <label><input type="checkbox" disabled={busy || scheduler.config?.fixedAccountId !== undefined} checked={scheduler.config?.sessionAffinity !== false} onChange={event => updateScheduler({ sessionAffinity: event.currentTarget.checked })} /> 同一对话固定账号</label>
+        {scheduler.config?.fixedAccountId === undefined ? null : <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaMuted">固定模式：所有对话只使用所选账号，不轮询、不自动切号</span>}
       </div>
     </div> : null}
     {signedIn && accounts.length > 0 ? <div className="codexSubscriptionAccounts">{accounts.map(candidate => <div className="codexSubscriptionAccount" data-active={candidate.active} key={candidate.id}><div className="codexSubscriptionAccountCopy"><div className="codexSubscriptionAccountName"><AccountEmail candidate={candidate} fallback={candidate.label} t={t} emailVisible={emailVisibleForAccount} onClick={toggleEmail} /><span className="codexSubscriptionAccountState">{candidate.enabled === false ? '已停用' : '已启用'}</span></div><AccountQuota snapshot={accountUsage[candidate.id]} /></div><div className="codexSubscriptionActions"><Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => configureAccount(candidate.id, { enabled: candidate.enabled === false })}>{candidate.enabled === false ? '启用' : '停用'}</Button>{candidate.active || candidate.enabled === false ? null : <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => selectAccount(candidate.id)}>{t('switchAccount')}</Button>}{accounts.length > 1 ? <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => removeAccount(candidate.id)}>{removeId === candidate.id ? t('removeConfirm') : t('removeAccount')}</Button> : null}{removeId === candidate.id ? <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoveId(undefined)}>{t('removeCancel')}</Button> : null}</div></div>)}</div> : null}

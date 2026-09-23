@@ -284,6 +284,15 @@ test('settings exposes manual multi-account switching with an explicit remove co
   assert.doesNotMatch(source, /accountId|\.access\b|\.refresh\b/u)
 })
 
+test('account settings expose a fixed-account diagnostic override and do not expose unfinished weighted controls', async () => {
+  const source = await readSource('src/client-account.jsx')
+  assert.match(source, /固定账号（测试）/u)
+  assert.match(source, /fixedAccountId/u)
+  assert.match(source, /不轮询、不自动切号/u)
+  assert.doesNotMatch(source, /option value="weighted-round-robin"/u)
+  assert.doesNotMatch(source, /优先级|权重/u)
+})
+
 test('account settings identify accounts by sanitized clickable email with privacy masking by default', async () => {
   const source = await text('src/client.jsx')
   assert.match(source, /candidate\.email/u)

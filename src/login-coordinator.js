@@ -325,6 +325,10 @@ export class CodexLoginCoordinator {
     if (patch.sessionAffinity !== undefined && typeof patch.sessionAffinity !== 'boolean') {
       throw new Error('Invalid Codex scheduler affinity')
     }
+    if (Object.hasOwn(patch, 'fixedAccountId') && patch.fixedAccountId !== null
+      && (typeof patch.fixedAccountId !== 'string' || patch.fixedAccountId.length === 0)) {
+      throw new Error('Invalid Codex fixed account')
+    }
     await this.updateSchedulerConfig(patch)
     return this.schedulerStatus()
   }
@@ -376,6 +380,7 @@ export function createCodexRpcHandler(coordinator, options = {}) {
       if (endpoint === 'scheduler/update') return ok(await coordinator.updateScheduler({
         ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
         ...(input.sessionAffinity === undefined ? {} : { sessionAffinity: input.sessionAffinity }),
+        ...(Object.hasOwn(input, 'fixedAccountId') ? { fixedAccountId: input.fixedAccountId } : {}),
       }))
       return badRequest(`unknown Codex auth endpoint: ${endpoint}`)
     } catch (error) {

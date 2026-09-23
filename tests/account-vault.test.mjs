@@ -182,6 +182,21 @@ test('re-import skips an identical credential and falls back to email only when 
   })
 })
 
+test('fixed account selection persists in the vault and clears when that account is disabled', async () => {
+  const backend = memoryCredentials({ refs: { CODEX_OAUTH: JSON.stringify(oauth('one')) } })
+  const ids = ['local-1', 'local-2']
+  const vault = new DshOAuthAccountVault(backend, {
+    key: 'dsh-codex-subscription/accounts', legacyRef: 'CODEX_OAUTH', createId: () => ids.shift(),
+  })
+  await vault.list()
+  await vault.add('Two', oauth('two'))
+  await vault.updateScheduler({ fixedAccountId: 'local-1' })
+  assert.equal((await vault.scheduler()).fixedAccountId, 'local-1')
+  await assert.rejects(() => vault.updateScheduler({ fixedAccountId: 'missing' }), /fixed account/i)
+  await vault.configure('local-1', { enabled: false })
+  assert.equal((await vault.scheduler()).fixedAccountId, undefined)
+})
+
 test('account vault serializes refreshes against the selected account snapshot', async () => {
   const backend = memoryCredentials({ refs: { CODEX_OAUTH: JSON.stringify(oauth('zero')) } })
   const vault = new DshOAuthAccountVault(backend, {

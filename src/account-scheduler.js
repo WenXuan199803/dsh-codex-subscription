@@ -113,6 +113,16 @@ export class CodexAccountScheduler {
     ])
     const now = this.now()
     for (const [id, state] of this.cooldowns) if (state.until <= now) this.cooldowns.delete(id)
+
+    // Fixed-account mode is an explicit diagnostic override: every conversation
+    // uses exactly that enabled account, ignores cross-request cooldown, and
+    // never falls through to another account after a retryable pre-output error.
+    if (typeof config.fixedAccountId === 'string' && config.fixedAccountId.length > 0) {
+      return accounts.find(account => account.id === config.fixedAccountId
+        && account.enabled !== false
+        && !excluded.has(account.id))
+    }
+
     const enabled = accounts.filter(account => account.enabled !== false
       && !excluded.has(account.id)
       && !this.cooldowns.has(account.id))

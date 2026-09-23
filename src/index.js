@@ -123,10 +123,14 @@ export function apply(ctx, config = {}) {
     expirySkewMs: OAUTH_EXPIRY_SKEW_MS,
     vault: accountVault,
   })
-  const schedulerConfig = () => ({
-    strategy: normalizeSchedulerStrategy(settings.get()[SCHEDULER_STRATEGY_FIELD]),
-    sessionAffinity: settings.get()[SCHEDULER_SESSION_AFFINITY_FIELD] !== false,
-  })
+  const schedulerConfig = async () => {
+    const accountScheduler = await accountVault?.scheduler?.() ?? {}
+    return {
+      strategy: normalizeSchedulerStrategy(settings.get()[SCHEDULER_STRATEGY_FIELD]),
+      sessionAffinity: settings.get()[SCHEDULER_SESSION_AFFINITY_FIELD] !== false,
+      ...(accountScheduler.fixedAccountId === undefined ? {} : { fixedAccountId: accountScheduler.fixedAccountId }),
+    }
+  }
   const scheduler = accountVault === undefined ? undefined : new CodexAccountScheduler(accountVault, {
     resolveConfig: schedulerConfig,
   })
@@ -355,10 +359,16 @@ export function apply(ctx, config = {}) {
     accountVault,
     scheduler,
     getSchedulerConfig: schedulerConfig,
-    updateSchedulerConfig: patch => settings.update({
-      ...(patch.strategy === undefined ? {} : { [SCHEDULER_STRATEGY_FIELD]: patch.strategy }),
-      ...(patch.sessionAffinity === undefined ? {} : { [SCHEDULER_SESSION_AFFINITY_FIELD]: patch.sessionAffinity }),
-    }),
+    updateSchedulerConfig: async patch => {
+      if (Object.hasOwn(patch, 'fixedAccountId')) {
+        await accountVault.updateScheduler({ fixedAccountId: patch.fixedAccountId })
+      }
+      const settingsPatch = {
+        ...(patch.strategy === undefined ? {} : { [SCHEDULER_STRATEGY_FIELD]: patch.strategy }),
+        ...(patch.sessionAffinity === undefined ? {} : { [SCHEDULER_SESSION_AFFINITY_FIELD]: patch.sessionAffinity }),
+      }
+      if (Object.keys(settingsPatch).length > 0) await settings.update(settingsPatch)
+    },
   })
   const baseUsageReader = createCodexUsageReader({
     getAuth: resolveAuth,

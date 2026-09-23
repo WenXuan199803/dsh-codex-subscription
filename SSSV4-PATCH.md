@@ -20,3 +20,4 @@ Explicitly excluded from the production fork:
 - CODEX-DSH launcher/runtime/process-management code.
 
 CODEX-DSH is an acceptance harness only. Its standalone launcher fixes must not be copied into this plugin.
+- Fixed-account diagnostic override: select one enabled vault account and force every conversation through it; no rotation or cross-account failover occurs while fixed, and disabling/removing that account clears the override.

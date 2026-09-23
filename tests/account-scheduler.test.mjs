@@ -46,6 +46,64 @@ test('round-robin without affinity rotates accounts', async () => {
   ], ['a', 'b', 'c', 'a'])
 })
 
+test('weighted round-robin honors account weights when affinity is off', async () => {
+  const weightedVault = vault({ strategy: 'weighted-round-robin', sessionAffinity: false })
+  const originalList = weightedVault.list
+  weightedVault.list = async () => (await originalList()).map(account => ({
+    ...account,
+    weight: account.id === 'a' ? 2 : 1,
+  }))
+  const scheduler = new CodexAccountScheduler(weightedVault)
+  assert.deepEqual([
+    (await scheduler.choose()).id,
+    (await scheduler.choose()).id,
+    (await scheduler.choose()).id,
+    (await scheduler.choose()).id,
+  ], ['a', 'a', 'b', 'c'])
+})
+
+test('fixed account mode ignores normal rotation and never falls through to another account', async () => {
+  const selected = []
+  const fixedVault = vault({ strategy: 'round-robin', sessionAffinity: false, fixedAccountId: 'b' })
+  const scheduler = new CodexAccountScheduler(fixedVault)
+  assert.equal((await scheduler.choose('one')).id, 'b')
+  assert.equal((await scheduler.choose('two')).id, 'b')
+
+  const store = {
+    current: undefined,
+    withAccount(id, operation) {
+      const previous = this.current
+      this.current = id
+      try {
+        const value = operation()
+        if (value && typeof value.then === 'function') return value.finally(() => { this.current = previous })
+        this.current = previous
+        return value
+      } catch (error) {
+        this.current = previous
+        throw error
+      }
+    },
+  }
+  const base = {
+    providerInfo(provider) { return { id: provider, name: provider } },
+    providerRetryPolicy() { return undefined },
+    imageRequestPricing() { return undefined },
+    async listModels() { return [] },
+    async resolveModel(provider, model) { return { provider, id: model, name: model } },
+    async *stream() {
+      selected.push(store.current)
+      yield { type: 'finish', reason: { kind: 'error', failure: { status: 503, code: 'SERVER_OVERLOADED', message: 'server_is_overloaded' } } }
+    },
+  }
+  const adapter = new ScheduledCodexAdapter(base, scheduler, store)
+  const chunks = []
+  for await (const chunk of adapter.stream({ provider: 'openai-codex', model: 'gpt-test', messages: [], sessionId: 'fixed-test' })) chunks.push(chunk)
+  assert.deepEqual(selected, ['b'])
+  assert.match(chunks.at(-1)?.reason?.failure?.message ?? '', /server_is_overloaded/u)
+  assert.equal((await scheduler.choose('another')).id, 'b', 'fixed testing bypasses cross-request cooldown')
+})
+
 test('scheduled adapter hides a pre-output failure and continues on the next account', async () => {
   const selected = []
   const store = {
