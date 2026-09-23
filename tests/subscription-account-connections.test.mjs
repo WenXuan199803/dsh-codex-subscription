@@ -13,9 +13,13 @@ test('successful account changes discard live connections; failures and reads re
   for (const endpoint of ['logout', 'account/select', 'account/remove']) {
     await handler(endpoint, { id: 'test-account' })
   }
-  assert.equal(closed, 3)
+  await handler('scheduler/update', { fixedAccountId: 'test-account' })
+  assert.equal(closed, 4)
+  await handler('scheduler/update', { strategy: 'round-robin' })
   await handler('status', {})
+  assert.equal(closed, 4, 'ordinary scheduler tuning does not discard account-scoped connections')
   ok = false
   for (const endpoint of ['logout', 'account/select', 'account/remove']) await handler(endpoint, {})
-  assert.equal(closed, 3)
+  await handler('scheduler/update', { fixedAccountId: null })
+  assert.equal(closed, 4)
 })

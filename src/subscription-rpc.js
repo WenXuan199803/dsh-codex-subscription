@@ -175,7 +175,9 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, account
       }
     }
     const result = await authHandler(endpoint, payload, signal)
-    if (result.ok === true && ['logout', 'account/select', 'account/remove'].includes(endpoint)) closeConnections?.()
+    const fixedAccountChanged = endpoint === 'scheduler/update'
+      && Object.hasOwn(payload ?? {}, 'fixedAccountId')
+    if (result.ok === true && (['logout', 'account/select', 'account/remove'].includes(endpoint) || fixedAccountChanged)) closeConnections?.()
     if (endpoint === 'account/remove' && result.ok === true && typeof payload?.id === 'string') {
       await usageReader.clearScope(payload.id)
       accountUsageService?.clear(payload.id)
@@ -186,6 +188,7 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, account
       resetCreditService.clear()
       modelCatalog?.clear()
     } else if (result.ok === true && (['account/select', 'account/remove', 'account/import', 'account/configure'].includes(endpoint)
+      || fixedAccountChanged
       || (endpoint === 'login/status' && result.value?.authenticated === true))) {
       usageReader.clearCache()
       accountUsageService?.clear()
