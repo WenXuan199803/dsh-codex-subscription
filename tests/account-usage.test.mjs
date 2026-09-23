@@ -39,6 +39,30 @@ test('per-account usage reads every account without changing active selection', 
   assert.equal(accounts.find(account => account.active).id, 'a')
 })
 
+test('account usage reads a bounded batch concurrently and preserves account order', async () => {
+  const accounts = ['a', 'b', 'c', 'd', 'e'].map(id => ({ id, enabled: true }))
+  const started = []
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  let firstBatchReady
+  const firstBatch = new Promise(resolve => { firstBatchReady = resolve })
+  const service = createAccountUsageService({
+    accountVault: { async list() { return accounts } },
+    store: { withAccount(_id, operation) { return operation() } },
+    createReader: id => ({ async read() {
+      started.push(id)
+      if (started.length === 3) firstBatchReady()
+      await gate
+      return { rateLimits: [] }
+    } }),
+  })
+  const reading = service.readAll()
+  await Promise.race([firstBatch, new Promise((_, reject) => setTimeout(() => reject(new Error('batch remained serial')), 100))])
+  assert.deepEqual(started, ['a', 'b', 'c'])
+  release()
+  assert.deepEqual((await reading).accounts.map(row => row.id), ['a', 'b', 'c', 'd', 'e'])
+})
+
 test('disabled accounts are not queried for usage', async () => {
   const service = createAccountUsageService({
     accountVault: { async list() { return [{ id: 'disabled', enabled: false }] } },

@@ -303,6 +303,9 @@ test('account quota rows retain last successful values while all accounts refres
   assert.match(source, /usageCache\.write\(item\.id, item\.usage\)/u)
   assert.match(source, /previous\[item\.id\]\?\.usage \?\? usageCache\.read\(item\.id\)/u)
   assert.match(source, /candidate\.enabled === false/u)
+  assert.match(source, /recoveryCall\(rpc, 'usage\/accounts', \{ force \}, 45_000\)/u)
+  assert.match(source, /setAccountUsageError\(true\)/u)
+  assert.doesNotMatch(source, /error: 'Could not read account usage'/u)
 })
 
 test('account settings identify accounts by sanitized clickable email with privacy masking by default', async () => {

@@ -15,6 +15,20 @@ const publicError = error => PUBLIC_USAGE_ERRORS.has(error?.message)
   : reusedRefreshToken(error) ? 'ChatGPT sign-in needs to be renewed'
     : 'Could not read ChatGPT usage'
 
+async function mapAccounts(accounts, signal, read) {
+  const results = new Array(accounts.length)
+  let nextIndex = 0
+  const worker = async () => {
+    while (nextIndex < accounts.length) {
+      signal?.throwIfAborted?.()
+      const index = nextIndex++
+      results[index] = await read(accounts[index])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(3, accounts.length) }, () => worker()))
+  return results
+}
+
 function planWeight(access) {
   try {
     const payload = JSON.parse(Buffer.from(access.split('.')[1], 'base64url').toString('utf8'))
@@ -60,39 +74,34 @@ export function createAccountUsageService({ accountVault, store, createReader })
   return Object.freeze({
     async readAll({ force = false, signal } = {}) {
       const accounts = await accountVault?.list?.() ?? []
-      const results = []
-      for (const account of accounts) {
-        signal?.throwIfAborted?.()
+      const results = await mapAccounts(accounts, signal, async account => {
         if (account.enabled === false) {
-          results.push({ id: account.id, disabled: true })
-          continue
+          return { id: account.id, disabled: true }
         }
         try {
           const usage = await store.withAccount(account.id, () => readerFor(account.id).read({ force, signal }))
-          results.push({ id: account.id, usage })
+          return { id: account.id, usage }
         } catch (error) {
           if (signal?.aborted) throw error
-          results.push({ id: account.id, error: publicError(error) })
+          return { id: account.id, error: publicError(error) }
         }
-      }
+      })
       return { accounts: results, fetchedAt: Date.now() }
     },
     async readPool({ force = false, signal } = {}) {
       const accounts = (await accountVault?.list?.() ?? []).filter(account => account.enabled !== false)
-      const rows = []
-      for (const account of accounts) {
-        signal?.throwIfAborted?.()
+      const rows = await mapAccounts(accounts, signal, async account => {
         try {
           const scopedCredential = await store.withAccount(account.id, () => store.read('openai-codex', { signal }))
           const weight = planWeight(scopedCredential?.access)
           if (weight === undefined) throw new Error('Unknown ChatGPT plan capacity')
           const usage = await store.withAccount(account.id, () => readerFor(account.id).read({ force, signal }))
-          rows.push({ weight, windows: { '5h': quotaWindow(usage, 18_000), week: quotaWindow(usage, 604_800) } })
+          return { weight, windows: { '5h': quotaWindow(usage, 18_000), week: quotaWindow(usage, 604_800) } }
         } catch (error) {
           if (signal?.aborted) throw error
-          rows.push({ error: publicError(error) })
+          return { error: publicError(error) }
         }
-      }
+      })
       return {
         total: accounts.length,
         failed: rows.filter(row => row.error).length,
