@@ -89,6 +89,31 @@ function normalizeLabel(value) {
   return label
 }
 
+function sameAccountIdentity(left, right) {
+  const leftAccountId = typeof left?.accountId === 'string' && left.accountId.length > 0 ? left.accountId : undefined
+  const rightAccountId = typeof right?.accountId === 'string' && right.accountId.length > 0 ? right.accountId : undefined
+  if (leftAccountId !== undefined && rightAccountId !== undefined) return leftAccountId === rightAccountId
+  const leftEmail = normalizeAccountEmail(left?.email)?.toLowerCase()
+  const rightEmail = normalizeAccountEmail(right?.email)?.toLowerCase()
+  return leftEmail !== undefined && rightEmail !== undefined && leftEmail === rightEmail
+}
+
+function sameOAuthCredential(left, right) {
+  return left?.type === right?.type
+    && left?.access === right?.access
+    && left?.refresh === right?.refresh
+    && left?.expires === right?.expires
+    && left?.accountId === right?.accountId
+    && normalizeAccountEmail(left?.email)?.toLowerCase() === normalizeAccountEmail(right?.email)?.toLowerCase()
+}
+
+function matchingAccountIndex(accounts, credential) {
+  const identity = accounts.findIndex(account => sameAccountIdentity(account.credential, credential))
+  if (identity >= 0) return identity
+  return accounts.findIndex(account => account.credential.access === credential.access
+    || account.credential.refresh === credential.refresh)
+}
+
 function assertVaultRecord(record) {
   if (record?.kind !== 'grant' || record.payload?.version !== VERSION
     || typeof record.payload.activeId !== 'string'
@@ -365,56 +390,73 @@ export class DshOAuthAccountVault {
         const fallback = credential.email ?? `Account ${index + 1}`
         return { label: normalizeLabel(entry?.label ?? fallback), credential }
       })
-      const existing = await this.#ensurePayload()
-      if (existing === undefined) {
-        const seenRefresh = new Set()
-        const seenAccess = new Set()
-        const accounts = []
+
+      const merge = source => {
+        const accounts = source.map(account => clone(account))
+        let added = 0
+        let updated = 0
         let duplicates = 0
         for (const entry of validated) {
-          if (seenRefresh.has(entry.credential.refresh) || seenAccess.has(entry.credential.access)) {
-            duplicates += 1
+          const index = matchingAccountIndex(accounts, entry.credential)
+          if (index >= 0) {
+            const current = accounts[index]
+            if (sameOAuthCredential(current.credential, entry.credential)) {
+              duplicates += 1
+              continue
+            }
+            // Re-importing the same OpenAI account refreshes only its OAuth
+            // credential. Local scheduling metadata and the stable vault id stay put.
+            accounts[index] = { ...current, credential: entry.credential }
+            updated += 1
             continue
           }
-          const id = this.createId()
-          accounts.push({ id, label: entry.label, credential: entry.credential, enabled: true, priority: 0, weight: 1 })
-          seenRefresh.add(entry.credential.refresh)
-          seenAccess.add(entry.credential.access)
+          accounts.push({
+            id: this.createId(),
+            label: entry.label,
+            credential: entry.credential,
+            enabled: true,
+            priority: 0,
+            weight: 1,
+          })
+          added += 1
         }
-        if (accounts.length === 0) throw new Error('No new Codex accounts to import')
+        return { accounts, added, updated, duplicates }
+      }
+
+      const existing = await this.#ensurePayload()
+      if (existing === undefined) {
+        const merged = merge([])
+        if (merged.accounts.length === 0) throw new Error('No new Codex accounts to import')
         const created = await this.credentials.modifyRecord(this.key, current => {
           if (current !== undefined) return Promise.resolve(current)
           return Promise.resolve(grant({
             version: VERSION,
-            activeId: accounts[0].id,
-            accounts,
+            activeId: merged.accounts[0].id,
+            accounts: merged.accounts,
             scheduler: normalizeScheduler(),
           }))
         })
         const payload = assertVaultRecord(created)
-        return { added: payload.accounts.length, duplicates, total: payload.accounts.length }
+        return {
+          added: merged.added,
+          updated: merged.updated,
+          duplicates: merged.duplicates,
+          total: payload.accounts.length,
+        }
       }
 
-      let added = 0
-      let duplicates = 0
+      let summary
       const payload = await this.#modifyPayload(current => {
-        const refreshTokens = new Set(current.accounts.map(account => account.credential.refresh))
-        const accessTokens = new Set(current.accounts.map(account => account.credential.access))
-        const accounts = [...current.accounts]
-        for (const entry of validated) {
-          if (refreshTokens.has(entry.credential.refresh) || accessTokens.has(entry.credential.access)) {
-            duplicates += 1
-            continue
-          }
-          const id = this.createId()
-          accounts.push({ id, label: entry.label, credential: entry.credential, enabled: true, priority: 0, weight: 1 })
-          refreshTokens.add(entry.credential.refresh)
-          accessTokens.add(entry.credential.access)
-          added += 1
-        }
-        return added === 0 ? current : { ...current, accounts }
+        summary = merge(current.accounts)
+        if (summary.added === 0 && summary.updated === 0) return current
+        return { ...current, accounts: summary.accounts }
       })
-      return { added, duplicates, total: payload.accounts.length }
+      return {
+        added: summary.added,
+        updated: summary.updated,
+        duplicates: summary.duplicates,
+        total: payload.accounts.length,
+      }
     })
   }
 

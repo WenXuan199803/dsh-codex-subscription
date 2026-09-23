@@ -221,18 +221,20 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
     setBusy(true); setError(undefined); setImportSummary(undefined)
     void (async () => {
       let added = 0
+      let updated = 0
       let duplicates = 0
       let total
       let nextAccount
       for (const file of files) {
         const result = await call('account/import', await importPayload(file))
         added += result.added ?? 0
+        updated += result.updated ?? 0
         duplicates += result.duplicates ?? 0
         total = result.total ?? total
         nextAccount = result.account ?? nextAccount
       }
       if (nextAccount) setAccount(nextAccount)
-      setImportSummary(`已导入 ${added} 个账号，跳过 ${duplicates} 个重复账号${total === undefined ? '' : `，当前共 ${total} 个`}`)
+      setImportSummary(`新增 ${added} 个，更新 ${updated} 个，跳过 ${duplicates} 个完全相同账号${total === undefined ? '' : `，当前共 ${total} 个`}`)
       setScheduler(await call('scheduler/status'))
       loadAccountUsage(true)
       notifyQuickQuota()

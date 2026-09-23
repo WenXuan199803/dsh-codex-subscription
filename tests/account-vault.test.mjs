@@ -108,6 +108,77 @@ test('account vault adds, switches, refreshes, and removes accounts independentl
   assert.equal(raw.payload.accounts.find(account => account.id === 'local-2'), undefined)
 })
 
+test('re-importing the same account updates credentials in place and preserves scheduling metadata', async () => {
+  const backend = memoryCredentials({ records: {
+    accounts: { kind: 'grant', payload: {
+      version: 1,
+      activeId: 'local-1',
+      accounts: [{
+        id: 'local-1',
+        label: 'Keep me',
+        credential: { ...oauth('old'), accountId: 'account-stable', email: 'same@example.com' },
+        enabled: false,
+        priority: 7,
+        weight: 3,
+      }],
+      scheduler: { strategy: 'round-robin', sessionAffinity: false },
+    } },
+  } })
+  const vault = new DshOAuthAccountVault(backend, {
+    key: 'accounts',
+    legacyRef: 'CODEX_OAUTH',
+    createId: () => { throw new Error('same account must not allocate a new vault id') },
+  })
+
+  const result = await vault.importMany([{
+    label: 'Imported label must not replace local label',
+    credential: { ...oauth('new'), accountId: 'account-stable', email: 'same@example.com' },
+  }])
+
+  assert.deepEqual(result, { added: 0, updated: 1, duplicates: 0, total: 1 })
+  const raw = backend.readRecordRaw('accounts').payload
+  assert.equal(raw.accounts.length, 1)
+  assert.equal(raw.accounts[0].id, 'local-1')
+  assert.equal(raw.accounts[0].label, 'Keep me')
+  assert.equal(raw.accounts[0].enabled, false)
+  assert.equal(raw.accounts[0].priority, 7)
+  assert.equal(raw.accounts[0].weight, 3)
+  assert.equal(raw.accounts[0].credential.access, 'access-new')
+  assert.equal(raw.accounts[0].credential.refresh, 'refresh-new')
+  assert.equal(raw.activeId, 'local-1')
+  assert.deepEqual(raw.scheduler, { strategy: 'round-robin', sessionAffinity: false })
+})
+
+test('re-import skips an identical credential and falls back to email only when account id is unavailable', async () => {
+  const original = { ...oauth('one'), email: 'same@example.com' }
+  delete original.accountId
+  const backend = memoryCredentials({ records: {
+    accounts: { kind: 'grant', payload: {
+      version: 1, activeId: 'local-1',
+      accounts: [{ id: 'local-1', label: 'One', credential: original, enabled: true }],
+    } },
+  } })
+  const ids = ['local-2']
+  const vault = new DshOAuthAccountVault(backend, {
+    key: 'accounts', legacyRef: 'CODEX_OAUTH', createId: () => ids.shift(),
+  })
+
+  assert.deepEqual(await vault.importMany([{ label: 'same', credential: original }]), {
+    added: 0, updated: 0, duplicates: 1, total: 1,
+  })
+
+  const refreshed = { ...oauth('new'), email: 'same@example.com' }
+  delete refreshed.accountId
+  assert.deepEqual(await vault.importMany([{ label: 'ignored', credential: refreshed }]), {
+    added: 0, updated: 1, duplicates: 0, total: 1,
+  })
+
+  const distinct = { ...oauth('other'), accountId: 'account-other', email: 'same@example.com' }
+  assert.deepEqual(await vault.importMany([{ label: 'Other account', credential: distinct }]), {
+    added: 1, updated: 0, duplicates: 0, total: 2,
+  })
+})
+
 test('account vault serializes refreshes against the selected account snapshot', async () => {
   const backend = memoryCredentials({ refs: { CODEX_OAUTH: JSON.stringify(oauth('zero')) } })
   const vault = new DshOAuthAccountVault(backend, {
