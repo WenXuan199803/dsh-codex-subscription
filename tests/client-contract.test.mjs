@@ -297,6 +297,14 @@ test('account settings expose fixed diagnostics, priority, weight, and weighted 
   assert.match(source, /权重只用于加权轮询/u)
 })
 
+test('account quota rows retain last successful values while all accounts refresh', async () => {
+  const source = await read('src/client-account.jsx')
+  assert.match(source, /usageCache\.read\(candidate\.id\)/u)
+  assert.match(source, /usageCache\.write\(item\.id, item\.usage\)/u)
+  assert.match(source, /previous\[item\.id\]\?\.usage \?\? usageCache\.read\(item\.id\)/u)
+  assert.match(source, /candidate\.enabled === false/u)
+})
+
 test('account settings identify accounts by sanitized clickable email with privacy masking by default', async () => {
   const source = await text('src/client.jsx')
   assert.match(source, /candidate\.email/u)

@@ -3,6 +3,7 @@ import { Button, Input } from './client-primitives.js'
 import { readLoginProgress } from './login-progress.js'
 import { CHANNEL, unwrap, accountStatusErrorText, maskEmail, notifyQuickQuota } from './client-shared.js'
 import { recoveryCall } from './client-recovery.js'
+import { usageCache } from './client-usage-cache.js'
 
 const MAX_IMPORT_FILE_BYTES = 6 * 1024 * 1024
 async function importPayload(file) {
@@ -36,7 +37,7 @@ const quotaResetLabel = resetsAt => {
 function AccountQuota({ snapshot }) {
   if (snapshot === undefined) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaMuted">额度读取中…</span>
   if (snapshot.disabled) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaMuted">已停用，未查询额度</span>
-  if (snapshot.error) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaError">{snapshot.error === 'ChatGPT sign-in needs to be renewed' ? '账号认证失效' : '额度读取失败'}</span>
+  if (snapshot.error && snapshot.usage === undefined) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaError">{snapshot.error === 'ChatGPT sign-in needs to be renewed' ? '账号认证失效' : '额度读取失败'}</span>
   const limit = snapshot.usage?.rateLimits?.find(item => item.id === 'codex') ?? snapshot.usage?.rateLimits?.[0]
   const windows = limit?.windows ?? []
   if (windows.length === 0) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaMuted">暂无额度数据</span>
@@ -46,7 +47,7 @@ function AccountQuota({ snapshot }) {
     return <span className="codexSubscriptionAccountQuotaWindow" key={`${window.windowSeconds}-${index}`}>
       <strong>{quotaWindowLabel(window.windowSeconds)} {remaining}%</strong>{reset ? <small>{reset} 重置</small> : null}
     </span>
-  })}</span>
+  })}{snapshot.error ? <small className="codexSubscriptionAccountQuotaError">{snapshot.error === 'ChatGPT sign-in needs to be renewed' ? '认证失效 · 上次结果' : '刷新失败 · 上次结果'}</small> : snapshot.cached ? <small className="codexSubscriptionAccountQuotaMuted">上次结果</small> : null}</span>
 }
 
 export function AccountEmail({ candidate, fallback, t, emailVisible, onClick }) {
@@ -102,12 +103,17 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
   const [scheduler, setScheduler] = useState()
   const [importSummary, setImportSummary] = useState()
   const [accountUsage, setAccountUsage] = useState({})
-  const failedAccounts = accounts.filter(candidate => accountUsage[candidate.id]?.error)
+  const visibleAccountUsage = Object.fromEntries(accounts.map(candidate => {
+    if (candidate.enabled === false) return [candidate.id, { id: candidate.id, disabled: true }]
+    const previous = usageCache.read(candidate.id)
+    return [candidate.id, accountUsage[candidate.id] ?? (previous ? { id: candidate.id, usage: previous, cached: true } : undefined)]
+  }))
+  const failedAccounts = accounts.filter(candidate => visibleAccountUsage[candidate.id]?.error)
   const [quotaBusy, setQuotaBusy] = useState(false)
   const quotaRequest = useRef(0)
   const importRef = useRef()
   const call = (endpoint, payload = {}) => recoveryCall(rpc, endpoint, payload)
-  const accountUsageKey = accounts.map(candidate => candidate.id).join('|')
+  const accountUsageKey = accounts.map(candidate => `${candidate.id}:${candidate.enabled === false}`).join('|')
   const loadAccountUsage = force => {
     if (account?.authenticated !== true || accounts.length === 0) {
       quotaRequest.current += 1
@@ -119,9 +125,27 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
     setQuotaBusy(true)
     void call('usage/accounts', { force }).then(value => {
       if (quotaRequest.current !== request) return
-      setAccountUsage(Object.fromEntries((value.accounts ?? []).map(item => [item.id, item])))
+      setAccountUsage(previous => {
+        const next = { ...previous }
+        for (const item of value.accounts ?? []) {
+          if (item.usage) {
+            usageCache.write(item.id, item.usage)
+            next[item.id] = { ...item, cached: false }
+          } else if (item.error) {
+            const last = previous[item.id]?.usage ?? usageCache.read(item.id)
+            next[item.id] = last ? { ...item, usage: last, cached: true } : item
+          } else next[item.id] = item
+        }
+        return next
+      })
     }).catch(() => {
-      if (quotaRequest.current === request) setAccountUsage({})
+      if (quotaRequest.current === request) setAccountUsage(previous => Object.fromEntries(accounts.map(candidate => {
+        if (candidate.enabled === false) return [candidate.id, { id: candidate.id, disabled: true }]
+        const last = previous[candidate.id]?.usage ?? usageCache.read(candidate.id)
+        return [candidate.id, last
+          ? { id: candidate.id, usage: last, cached: true, error: 'Could not read account usage' }
+          : { id: candidate.id, error: 'Could not read account usage' }]
+      })))
     }).finally(() => {
       if (quotaRequest.current === request) setQuotaBusy(false)
     })
@@ -322,7 +346,7 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
       <p className="codexSubscriptionPreferenceHint">先选择优先级最高的已启用账号；同级账号再按所选策略调度。权重只用于加权轮询；同一对话固定账号时，轮询只影响新对话。</p>
     </div> : null}
     {signedIn && failedAccounts.length > 0 ? <p className="codexSubscriptionError" role="status">{failedAccounts.length} 个账号额度不可读：{failedAccounts.map(candidate => candidate.email ? maskEmail(candidate.email) : candidate.label).join('、')}。这不代表订阅到期；请先刷新额度，持续失败时检查登录凭据。</p> : null}
-    {signedIn && accounts.length > 0 ? <div className="codexSubscriptionAccounts">{accounts.map(candidate => <div className="codexSubscriptionAccount" data-active={candidate.active} key={candidate.id}><div className="codexSubscriptionAccountCopy"><div className="codexSubscriptionAccountName"><AccountEmail candidate={candidate} fallback={candidate.label} t={t} emailVisible={emailVisibleForAccount} onClick={toggleEmail} /><span className="codexSubscriptionAccountState">{candidate.enabled === false ? '已停用' : '已启用'}</span></div><AccountQuota snapshot={accountUsage[candidate.id]} /><AccountSchedulingControls candidate={candidate} busy={busy || loginVisible} onConfigure={configureAccount} /></div><div className="codexSubscriptionActions"><Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => configureAccount(candidate.id, { enabled: candidate.enabled === false })}>{candidate.enabled === false ? '启用' : '停用'}</Button>{candidate.active || candidate.enabled === false ? null : <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => selectAccount(candidate.id)}>{t('switchAccount')}</Button>}{accounts.length > 1 ? <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => removeAccount(candidate.id)}>{removeId === candidate.id ? t('removeConfirm') : t('removeAccount')}</Button> : null}{removeId === candidate.id ? <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoveId(undefined)}>{t('removeCancel')}</Button> : null}</div></div>)}</div> : null}
+    {signedIn && accounts.length > 0 ? <div className="codexSubscriptionAccounts">{accounts.map(candidate => <div className="codexSubscriptionAccount" data-active={candidate.active} key={candidate.id}><div className="codexSubscriptionAccountCopy"><div className="codexSubscriptionAccountName"><AccountEmail candidate={candidate} fallback={candidate.label} t={t} emailVisible={emailVisibleForAccount} onClick={toggleEmail} /><span className="codexSubscriptionAccountState">{candidate.enabled === false ? '已停用' : '已启用'}</span></div><AccountQuota snapshot={visibleAccountUsage[candidate.id]} /><AccountSchedulingControls candidate={candidate} busy={busy || loginVisible} onConfigure={configureAccount} /></div><div className="codexSubscriptionActions"><Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => configureAccount(candidate.id, { enabled: candidate.enabled === false })}>{candidate.enabled === false ? '启用' : '停用'}</Button>{candidate.active || candidate.enabled === false ? null : <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => selectAccount(candidate.id)}>{t('switchAccount')}</Button>}{accounts.length > 1 ? <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => removeAccount(candidate.id)}>{removeId === candidate.id ? t('removeConfirm') : t('removeAccount')}</Button> : null}{removeId === candidate.id ? <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoveId(undefined)}>{t('removeCancel')}</Button> : null}</div></div>)}</div> : null}
     {signedIn && adding && flow === undefined ? <div className="codexSubscriptionFlow"><div className="codexSubscriptionActions"><Button type="button" variant="primary" disabled={busy} onClick={() => begin('browser')}>{t('browserLogin')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => begin('device_code')}>{t('deviceLogin')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => setAdding(false)}>{t('cancel')}</Button></div></div> : null}
     {flow?.phase === 'waiting_device' ? <div className="codexSubscriptionFlow"><p>{t('deviceHint')}</p><code className="codexSubscriptionCode">{flow.deviceCode?.userCode}</code><a href={flow.deviceCode?.verificationUri} target="_blank" rel="noreferrer">{t('openLogin')}</a><p>{t('waiting')}</p><Button type="button" variant="outline" disabled={busy} onClick={cancel}>{t('cancel')}</Button></div> : null}
     {flow?.phase === 'waiting_input' ? <form className="codexSubscriptionFlow" onSubmit={submit}><p>{t('manualCode')}</p><Input className="codexSubscriptionInput" value={manualCode} onChange={event => setManualCode(event.currentTarget.value)} autoComplete="off" spellCheck={false} /><div className="codexSubscriptionActions"><Button type="submit" variant="primary" disabled={busy || manualCode.trim() === ''}>{t('submit')}</Button><Button type="button" variant="outline" disabled={busy} onClick={cancel}>{t('cancel')}</Button></div></form> : null}
