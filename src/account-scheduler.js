@@ -34,6 +34,10 @@ function classifyFailure(failure = {}) {
     || /invalidated oauth token|invalid(?:ated)? oauth access token/iu.test(message)) {
     return { retryable: true, reason: 'auth', cooldownMs: 60 * 1000 }
   }
+  if ((status === 400 || status === 404)
+    && /model.{0,80}(?:not found|not available|not supported|does not exist|do not have access)/iu.test(message)) {
+    return { retryable: true, reason: 'model-access', cooldownMs: 60 * 1000 }
+  }
   if ([408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526].includes(status)
     || /OVERLOAD|SERVICE_UNAVAILABLE|UPSTREAM|TIMEOUT|NETWORK|CONNECTION/.test(code)
     || /overloaded|service unavailable|timed? out|ECONN|EPIPE|EOF|network/iu.test(message)) {
@@ -189,21 +193,29 @@ async function* scopedIterator(store, accountId, iterable) {
 }
 
 export class ScheduledCodexAdapter extends LlmAdapter {
-  constructor(base, scheduler, store) {
+  constructor(base, scheduler, store, catalog) {
     super()
     this.base = base
     this.scheduler = scheduler
     this.store = store
+    this.catalog = catalog
   }
 
   current(...args) { return typeof this.base.current === 'function' ? this.base.current(...args) : undefined }
   providerInfo(provider) { return this.base.providerInfo(provider) }
   providerRetryPolicy(provider) { return this.base.providerRetryPolicy(provider) }
   imageRequestPricing(provider, model) { return this.base.imageRequestPricing(provider, model) }
-  listModels(provider) { return this.base.listModels(provider) }
-  resolveModel(provider, model, signal) { return this.base.resolveModel(provider, model, signal) }
+  async listModels(provider) {
+    await this.catalog?.ready?.()
+    return this.base.listModels(provider)
+  }
+  async resolveModel(provider, model, signal) {
+    await this.catalog?.ensure?.(model)
+    return this.base.resolveModel(provider, model, signal)
+  }
 
   async prepareCall(provider, model, signal) {
+    await this.catalog?.ensure?.(model)
     const prepared = await this.base.prepareCall(provider, model, signal)
     return {
       model: prepared.model,

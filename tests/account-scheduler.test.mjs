@@ -23,6 +23,26 @@ test('classifies quota and overload failures for account failover', () => {
   assert.equal(classifyFailure({ status: 429, message: 'usage_limit_reached resets_in_seconds: 120' }).reason, 'quota')
   assert.equal(classifyFailure({ status: 503, message: 'server_is_overloaded' }).reason, 'transient')
   assert.equal(classifyFailure({ status: 400, message: 'bad request' }).retryable, false)
+  assert.equal(classifyFailure({ status: 400, message: 'model gpt-6-sol is not available for this account' }).reason, 'model-access')
+})
+
+test('model resolution waits for the catalog after a bulk import', async () => {
+  let available = false
+  const catalog = { async ensure() { available = true }, async ready() { available = true } }
+  const base = {
+    async resolveModel(_provider, model) {
+      if (!available) throw new Error(`no configured model ${model}`)
+      return { id: model }
+    },
+    async prepareCall(_provider, model) {
+      if (!available) throw new Error(`no configured model ${model}`)
+      return { model: { id: model }, stream: async function* () {} }
+    },
+  }
+  const adapter = new ScheduledCodexAdapter(base, undefined, undefined, catalog)
+  assert.equal((await adapter.resolveModel('openai-codex', 'gpt-6-sol')).id, 'gpt-6-sol')
+  available = false
+  assert.equal((await adapter.prepareCall('openai-codex', 'gpt-6-sol')).model.id, 'gpt-6-sol')
 })
 
 test('fill-first keeps one account until it cools down, then advances', async () => {

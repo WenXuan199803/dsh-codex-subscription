@@ -381,6 +381,18 @@ test('request-scoped credential reads and refreshes do not mutate the active acc
     access: 'access-one-refreshed',
   })))
 
+  const [scopedOne, scopedTwo] = await Promise.all([
+    store.withAccount('local-1', () => store.read('openai-codex')),
+    store.withAccount('local-2', () => store.read('openai-codex')),
+  ])
+  assert.equal(scopedOne.access, 'access-one-refreshed')
+  assert.equal(scopedTwo.access, 'access-two')
+  await Promise.all([
+    store.withAccount('local-1', () => store.modify('openai-codex', current => ({ ...current, refresh: 'refresh-one-new' }))),
+    store.withAccount('local-2', () => store.modify('openai-codex', current => ({ ...current, refresh: 'refresh-two-new' }))),
+  ])
+
   assert.equal((await vault.read('local-1')).access, 'access-one-refreshed')
-  assert.deepEqual(await vault.readActive(), oauth('two'))
+  assert.equal((await vault.read('local-1')).refresh, 'refresh-one-new')
+  assert.equal((await vault.readActive()).refresh, 'refresh-two-new')
 })

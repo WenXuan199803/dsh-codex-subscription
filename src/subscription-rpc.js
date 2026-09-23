@@ -186,8 +186,9 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, account
       await usageReader.clear()
       accountUsageService?.clear()
       resetCreditService.clear()
-      modelCatalog?.clear()
-    } else if (result.ok === true && (['account/select', 'account/remove', 'account/import', 'account/configure'].includes(endpoint)
+      modelCatalog?.clear({ retain: false })
+    } else if (result.ok === true && (['account/select', 'account/remove', 'account/configure'].includes(endpoint)
+      || (endpoint === 'account/import' && (result.value?.added > 0 || result.value?.updated > 0))
       || fixedAccountChanged
       || (endpoint === 'login/status' && result.value?.authenticated === true))) {
       usageReader.clearCache()

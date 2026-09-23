@@ -54,6 +54,8 @@ test('unsupported catalog capabilities are diagnostic-only and follow catalog li
   await catalog.refresh()
   assert.deepEqual(catalog.capabilityGaps(), expected)
   catalog.clear()
+  assert.deepEqual(catalog.capabilityGaps(), expected)
+  catalog.clear({ retain: false })
   assert.deepEqual(catalog.capabilityGaps(), [])
 })
 
@@ -291,5 +293,41 @@ test('catalog support state distinguishes fallback, successful refresh, and reta
   await assert.rejects(catalog.refresh(), /HTTP 403/)
   assert.deepEqual(catalog.status(), { source: 'online', refresh: 'failed' })
   catalog.clear()
-  assert.deepEqual(catalog.status(), { source: 'fallback', refresh: 'idle' })
+  assert.deepEqual(catalog.status(), { source: 'online', refresh: 'idle' })
+})
+
+test('account import keeps a verified model and catalog lookup tries the next account', async () => {
+  let broken = false
+  const attempted = []
+  const catalog = createOfficialModelCatalog({
+    baseModels: () => base,
+    accountIds: async () => ['first', 'second'],
+    withAccount: async (id, operation) => { attempted.push(id); return operation() },
+    getAuth: async () => ({ auth: { apiKey: 'test-token' } }),
+    readCredential: async () => ({ type: 'oauth', accountId: 'test-account' }),
+    fetch: async () => broken && attempted.at(-1) === 'first'
+      ? new Response('', { status: 401 })
+      : Response.json({ models: [remote({ slug: 'gpt-6-sol' })] }),
+  })
+  await catalog.refresh()
+  catalog.clear()
+  assert.equal(catalog.getModels(base)[0].id, 'gpt-6-sol')
+  broken = true
+  await catalog.refresh()
+  assert.deepEqual(attempted.slice(-2), ['first', 'second'])
+  assert.equal(catalog.getModels(base)[0].id, 'gpt-6-sol')
+})
+
+test('a requested model is found on the second account before resolution', async () => {
+  let account
+  const catalog = createOfficialModelCatalog({
+    baseModels: () => base,
+    accountIds: async () => ['first', 'second'],
+    withAccount: async (id, operation) => { account = id; return operation() },
+    getAuth: async () => ({ auth: { apiKey: 'test-token' } }),
+    readCredential: async () => ({ type: 'oauth', accountId: 'test-account' }),
+    fetch: async () => Response.json({ models: [remote({ slug: account === 'first' ? 'gpt-first' : 'gpt-6-sol' })] }),
+  })
+  await catalog.ensure('gpt-6-sol')
+  assert.equal(catalog.getModels(base)[0].id, 'gpt-6-sol')
 })

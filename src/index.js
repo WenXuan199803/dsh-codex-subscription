@@ -148,6 +148,14 @@ export function apply(ctx, config = {}) {
     readCredential: options => store.read(PROVIDER, options),
     baseModels: () => baseProvider.getModels(),
     fetch: (input, init) => network.fetch('catalog', input, init),
+    accountIds: async () => {
+      const accounts = await accountVault?.list?.() ?? []
+      const active = await accountVault?.activeId?.()
+      return accounts.filter(account => account.enabled !== false)
+        .sort((left, right) => Number(right.id === active) - Number(left.id === active))
+        .map(account => account.id)
+    },
+    withAccount: (id, operation) => store.withAccount(id, operation),
   })
   const connection = createSubscriptionConnection({ resolveMode: () => settings.get().connectionMode })
   const compaction = createCompactionBridge({
@@ -314,7 +322,7 @@ export function apply(ctx, config = {}) {
     auth: adapterAuth,
     resolveAttachments: () => ctx.get?.('attachments'),
   })
-  const scheduledAdapter = scheduler === undefined ? adapter : new ScheduledCodexAdapter(adapter, scheduler, store)
+  const scheduledAdapter = scheduler === undefined ? adapter : new ScheduledCodexAdapter(adapter, scheduler, store, modelCatalog)
   ctx.llm.registerAdapter([PROVIDER], compaction.wrapAdapter(scheduledAdapter))
   const currentAgent = () => ctx.get?.('agents')?.currentInitiator?.()
   const codexSearch = createCodexSearchProvider({

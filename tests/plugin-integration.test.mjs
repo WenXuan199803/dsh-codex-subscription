@@ -422,6 +422,20 @@ test('preferences/models refreshes the catalog before returning the current mode
   assert.doesNotMatch(JSON.stringify(failed), /credential details/)
 })
 
+test('reimporting only identical accounts does not invalidate the model catalog', async () => {
+  const calls = []
+  const handler = plugin.createSubscriptionRpcHandler({
+    authHandler: async () => ({ ok: true, value: { added: 0, updated: 0, duplicates: 7 } }),
+    usageReader: { clearCache() { calls.push('usage') } },
+    accountUsageService: { clear() { calls.push('accounts') } },
+    resetCreditService: { clear() { calls.push('resets') } },
+    modelCatalog: { clear() { calls.push('catalog') }, async refresh() { calls.push('refresh') } },
+  })
+  const result = await handler('account/import', {}, new AbortController().signal)
+  assert.equal(result.value.duplicates, 7)
+  assert.deepEqual(calls, [])
+})
+
 test('usage failures use a DSH-supported bounded RPC error', async () => {
   const handler = plugin.createSubscriptionRpcHandler({
     async authHandler() { throw new Error('not used') },

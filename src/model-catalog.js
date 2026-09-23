@@ -118,7 +118,7 @@ export function createOfficialModelCatalog(options = {}) {
   let generation = 0
   let refreshStatus = 'idle'
 
-  const refresh = ({ signal } = {}) => {
+  const refresh = ({ signal, modelId } = {}) => {
     if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('Codex model catalog refresh aborted'))
     if (refreshing?.generation === generation) return refreshing.promise
     const currentGeneration = generation
@@ -133,31 +133,55 @@ export function createOfficialModelCatalog(options = {}) {
     let timer
     const timeoutError = new Error('Codex model catalog refresh timed out')
     const work = (async () => {
-      const auth = await options.getAuth({ signal: requestSignal })
-      if (currentGeneration !== generation || requestSignal.aborted) return false
-      const credential = await options.readCredential({ signal: requestSignal })
-      if (currentGeneration !== generation || requestSignal.aborted) return false
-      const access = auth?.auth?.apiKey
-      const accountId = credential?.type === 'oauth' ? credential.accountId : undefined
-      if (typeof access !== 'string' || access.length === 0 || typeof accountId !== 'string' || accountId.length === 0) {
-        return false
+      const request = async () => {
+        const auth = await options.getAuth({ signal: requestSignal })
+        const credential = await options.readCredential({ signal: requestSignal })
+        const access = auth?.auth?.apiKey
+        const accountId = credential?.type === 'oauth' ? credential.accountId : undefined
+        if (typeof access !== 'string' || access.length === 0 || typeof accountId !== 'string' || accountId.length === 0) {
+          throw new Error('Codex model catalog has no usable account credential')
+        }
+        const headers = {
+          authorization: `Bearer ${access}`,
+          'chatgpt-account-id': accountId,
+          accept: 'application/json',
+          originator: 'pi',
+          'user-agent': USER_AGENT,
+          ...(etag === undefined || modelId !== undefined ? {} : { 'if-none-match': etag }),
+        }
+        return fetchCatalog(CODEX_MODELS_URL, { method: 'GET', redirect: 'error', headers, signal: requestSignal })
       }
-      const headers = {
-        authorization: `Bearer ${access}`,
-        'chatgpt-account-id': accountId,
-        accept: 'application/json',
-        originator: 'pi',
-        'user-agent': USER_AGENT,
-        ...(etag === undefined ? {} : { 'if-none-match': etag }),
+      const accountIds = options.accountIds === undefined ? undefined : await options.accountIds()
+      let response
+      let requiredModels
+      let lastError
+      for (const id of Array.isArray(accountIds) && accountIds.length > 0 ? accountIds : [undefined]) {
+        requestSignal.throwIfAborted()
+        try {
+          response = id === undefined ? await request() : await options.withAccount(id, request)
+          if (response.status === 304) break
+          if (response.ok && modelId !== undefined) {
+            requiredModels = parseOfficialModelCatalog(await response.clone().json())
+            if (requiredModels.some(model => model.id === modelId)) break
+            lastError = new Error(`Codex account does not advertise model ${modelId}`)
+            response = undefined
+            continue
+          }
+          if (response.ok) break
+          lastError = new Error(`Codex model catalog failed (HTTP ${response.status})`)
+          response = undefined
+        } catch (error) {
+          lastError = error
+        }
       }
-      const response = await fetchCatalog(CODEX_MODELS_URL, { method: 'GET', redirect: 'error', headers, signal: requestSignal })
+      if (response === undefined) throw lastError ?? new Error('Codex model catalog is unavailable')
       if (currentGeneration !== generation || requestSignal.aborted) return false
       if (response.status === 304) {
         outcome = 'ok'
         return false
       }
       if (!response.ok) throw new Error(`Codex model catalog failed (HTTP ${response.status})`)
-      const remote = parseOfficialModelCatalog(await response.json())
+      const remote = requiredModels ?? parseOfficialModelCatalog(await response.json())
       if (currentGeneration !== generation || requestSignal.aborted) return false
       if (remote.length === 0) throw new Error('Codex returned an empty model catalog')
       const baseModels = options.baseModels()
@@ -197,11 +221,21 @@ export function createOfficialModelCatalog(options = {}) {
 
   return Object.freeze({
     refresh,
-    // Account changes clear the catalog. Do not let the first model turn race
-    // the refresh and silently fall back to the legacy wire envelope.
+    // A cold catalog must finish loading before a turn resolves its model.
     async ready() {
       if (models !== undefined) return
       try { await refresh() } catch { /* status() exposes the failed lookup */ }
+    },
+    async ensure(modelId) {
+      if (models?.some(model => model.id === modelId)) return
+      await this.ready()
+      if (models?.some(model => model.id === modelId)) return
+      try { await refresh({ modelId }) } catch { /* preserve the last verified catalog */ }
+      if (models?.some(model => model.id === modelId)) return
+      // A concurrent generic refresh may have won the shared flight.
+      if (refreshStatus === 'ok') {
+        try { await refresh({ modelId }) } catch { /* the caller reports UNKNOWN_MODEL */ }
+      }
     },
     // Spark's research preview retired on 2026-09-14. A bundled offline list
     // must not resurrect it; a successful official catalog remains authoritative.
@@ -213,13 +247,16 @@ export function createOfficialModelCatalog(options = {}) {
       .slice(0, 20)
       .map(model => ({ model: model.id, ...structuredClone(model.unsupported) })),
     status: () => ({ source: models === undefined ? 'fallback' : 'online', refresh: refreshStatus }),
-    clear() {
+    clear({ retain = true } = {}) {
       generation += 1
       const flight = refreshing
       refreshing = undefined
       flight?.cancel()
-      models = undefined
-      metadata = new Map()
+      // Keep verified models through an account change; explicit logout drops them.
+      if (!retain) {
+        models = undefined
+        metadata = new Map()
+      }
       etag = undefined
       refreshStatus = 'idle'
       revision += 1
