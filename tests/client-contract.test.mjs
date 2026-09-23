@@ -285,7 +285,7 @@ test('settings exposes manual multi-account switching with an explicit remove co
 })
 
 test('account settings expose a fixed-account diagnostic override and do not expose unfinished weighted controls', async () => {
-  const source = await readSource('src/client-account.jsx')
+  const source = await read('src/client-account.jsx')
   assert.match(source, /固定账号（测试）/u)
   assert.match(source, /fixedAccountId/u)
   assert.match(source, /不轮询、不自动切号/u)
