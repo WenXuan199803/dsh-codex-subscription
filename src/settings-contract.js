@@ -17,10 +17,6 @@ export const SPEED_MODE_FIELD = 'speedMode'
 export const SPEED_MODE_STANDARD = 'standard'
 export const SPEED_MODE_FAST = 'fast'
 export const DEFAULT_SPEED_MODE = SPEED_MODE_STANDARD
-export const ACCOUNT_ROUTING_MODE_FIELD = 'accountRoutingMode'
-export const ACCOUNT_ROUTING_MODE_SCHEDULER = 'scheduler'
-export const ACCOUNT_ROUTING_MODE_NATIVE = 'native'
-export const DEFAULT_ACCOUNT_ROUTING_MODE = ACCOUNT_ROUTING_MODE_SCHEDULER
 export const SCHEDULER_STRATEGY_FIELD = 'accountSchedulerStrategy'
 export const SCHEDULER_STRATEGY_FILL_FIRST = 'fill-first'
 export const SCHEDULER_STRATEGY_ROUND_ROBIN = 'round-robin'
@@ -81,10 +77,6 @@ export const normalizeOutputVerbosity = value => [
 export const normalizeSpeedMode = value => [SPEED_MODE_STANDARD, SPEED_MODE_FAST].includes(value)
   ? value
   : DEFAULT_SPEED_MODE
-
-export const normalizeAccountRoutingMode = value => [ACCOUNT_ROUTING_MODE_SCHEDULER, ACCOUNT_ROUTING_MODE_NATIVE].includes(value)
-  ? value
-  : DEFAULT_ACCOUNT_ROUTING_MODE
 
 export const normalizeSchedulerStrategy = value => [
   SCHEDULER_STRATEGY_FILL_FIRST,

@@ -3,7 +3,7 @@ import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { readLoginProgress } from './login-progress.js'
 import { CHANNEL, unwrap, accountStatusErrorText, maskEmail, notifyQuickQuota, usePreferenceSnapshot } from './client-shared.js'
 import { recoveryCall } from './client-recovery.js'
-import { ACCOUNT_ROUTING_MODE_NATIVE, SPEED_MODE_FAST } from './settings-contract.js'
+import { SPEED_MODE_FAST } from './settings-contract.js'
 
 const MAX_IMPORT_FILE_BYTES = 6 * 1024 * 1024
 async function importPayload(file) {
@@ -200,12 +200,6 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut, preferen
       setAccount(next); onSignedOut(); notifyQuickQuota()
     }).catch(() => setError(t('failed'))).finally(() => setBusy(false))
   }
-  const selectTestAccount = id => {
-    setBusy(true); setError(undefined)
-    void call('account/test-select', { id }).then(setScheduler)
-      .catch(error => setError(error instanceof Error ? error.message : t('failed')))
-      .finally(() => setBusy(false))
-  }
   const configureAccount = (id, patch) => {
     setBusy(true); setError(undefined)
     void call('account/configure', { id, ...patch }).then(next => {
@@ -257,11 +251,8 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut, preferen
   const accountReady = account !== undefined
   const loginVisible = flow !== undefined && !['authenticated', 'failed', 'cancelled'].includes(flow.phase)
   const activeAccount = accounts.find(candidate => candidate.active === true)
-  const nativeDirect = preferenceSnapshot.accountRoutingMode === ACCOUNT_ROUTING_MODE_NATIVE
   const fastMode = preferenceSnapshot.speedMode === SPEED_MODE_FAST
-  const testAccountId = scheduler?.testAccountId ?? activeAccount?.id
-  const testAccount = accounts.find(candidate => candidate.id === testAccountId) ?? activeAccount
-  const activeAccountLabel = (nativeDirect ? testAccount : activeAccount)?.email ?? (nativeDirect ? testAccount : activeAccount)?.label ?? '—'
+  const activeAccountLabel = activeAccount?.email ?? activeAccount?.label ?? '—'
 
   const toggleEmail = () => {
     setEmailVisibilityKey(accountVisibilityKey)
@@ -298,7 +289,7 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut, preferen
         <label><input type="checkbox" disabled={busy} checked={scheduler.config?.sessionAffinity !== false} onChange={event => updateScheduler({ sessionAffinity: event.currentTarget.checked })} /> 同一对话固定账号</label>
       </div>
     </div> : null}
-    {signedIn && accounts.length > 0 ? <div className="codexSubscriptionAccounts">{accounts.map(candidate => <div className="codexSubscriptionAccount" data-active={nativeDirect ? candidate.id === testAccountId : candidate.active} key={candidate.id}><div className="codexSubscriptionAccountCopy"><div className="codexSubscriptionAccountName"><AccountEmail candidate={candidate} fallback={candidate.label} t={t} emailVisible={emailVisibleForAccount} onClick={toggleEmail} /><span className="codexSubscriptionAccountState">{candidate.enabled === false ? '已停用' : '已启用'}</span></div><AccountQuota snapshot={accountUsage[candidate.id]} /></div><div className="codexSubscriptionActions"><Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => configureAccount(candidate.id, { enabled: candidate.enabled === false })}>{candidate.enabled === false ? '启用' : '停用'}</Button>{nativeDirect ? (candidate.id === testAccountId ? <span className="codexSubscriptionAccountState">当前测试账号</span> : <Button type="button" variant="primary" disabled={busy || loginVisible} onClick={() => selectTestAccount(candidate.id)}>用此账号测试</Button>) : (candidate.active ? <span className="codexSubscriptionAccountState">当前账号</span> : <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => selectAccount(candidate.id)}>{t('switchAccount')}</Button>)}{accounts.length > 1 ? <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => removeAccount(candidate.id)}>{removeId === candidate.id ? t('removeConfirm') : t('removeAccount')}</Button> : null}{removeId === candidate.id ? <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoveId(undefined)}>{t('removeCancel')}</Button> : null}</div></div>)}</div> : null}
+    {signedIn && accounts.length > 0 ? <div className="codexSubscriptionAccounts">{accounts.map(candidate => <div className="codexSubscriptionAccount" data-active={candidate.active} key={candidate.id}><div className="codexSubscriptionAccountCopy"><div className="codexSubscriptionAccountName"><AccountEmail candidate={candidate} fallback={candidate.label} t={t} emailVisible={emailVisibleForAccount} onClick={toggleEmail} /><span className="codexSubscriptionAccountState">{candidate.enabled === false ? '已停用' : '已启用'}</span></div><AccountQuota snapshot={accountUsage[candidate.id]} /></div><div className="codexSubscriptionActions"><Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => configureAccount(candidate.id, { enabled: candidate.enabled === false })}>{candidate.enabled === false ? '启用' : '停用'}</Button>{candidate.active ? <span className="codexSubscriptionAccountState">当前账号</span> : <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => selectAccount(candidate.id)}>{t('switchAccount')}</Button>}{accounts.length > 1 ? <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => removeAccount(candidate.id)}>{removeId === candidate.id ? t('removeConfirm') : t('removeAccount')}</Button> : null}{removeId === candidate.id ? <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoveId(undefined)}>{t('removeCancel')}</Button> : null}</div></div>)}</div> : null}
     {signedIn && adding && flow === undefined ? <div className="codexSubscriptionFlow"><div className="codexSubscriptionActions"><Button type="button" variant="primary" disabled={busy} onClick={() => begin('browser')}>{t('browserLogin')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => begin('device_code')}>{t('deviceLogin')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => setAdding(false)}>{t('cancel')}</Button></div></div> : null}
     {flow?.phase === 'waiting_device' ? <div className="codexSubscriptionFlow"><p>{t('deviceHint')}</p><code className="codexSubscriptionCode">{flow.deviceCode?.userCode}</code><a href={flow.deviceCode?.verificationUri} target="_blank" rel="noreferrer">{t('openLogin')}</a><p>{t('waiting')}</p><Button type="button" variant="outline" disabled={busy} onClick={cancel}>{t('cancel')}</Button></div> : null}
     {flow?.phase === 'waiting_input' ? <form className="codexSubscriptionFlow" onSubmit={submit}><p>{t('manualCode')}</p><Input className="codexSubscriptionInput" value={manualCode} onChange={event => setManualCode(event.currentTarget.value)} autoComplete="off" spellCheck={false} /><div className="codexSubscriptionActions"><Button type="submit" variant="primary" disabled={busy || manualCode.trim() === ''}>{t('submit')}</Button><Button type="button" variant="outline" disabled={busy} onClick={cancel}>{t('cancel')}</Button></div></form> : null}

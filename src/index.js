@@ -27,7 +27,7 @@ import { inheritedOriginalImageRef } from './image-original-contract.js'
 import { createSubscriptionDiagnostics } from './diagnostics.js'
 import { CodexAccountScheduler, ScheduledCodexAdapter } from './account-scheduler.js'
 import { createAccountUsageService } from './account-usage.js'
-import { ACCOUNT_ROUTING_MODE_FIELD, ACCOUNT_ROUTING_MODE_NATIVE, CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeAccountRoutingMode, normalizeQuickQuotaMode, normalizeOutputVerbosity, normalizeSchedulerStrategy, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, SCHEDULER_STRATEGY_FIELD, SCHEDULER_SESSION_AFFINITY_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
+import { CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeQuickQuotaMode, normalizeOutputVerbosity, normalizeSchedulerStrategy, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, SCHEDULER_STRATEGY_FIELD, SCHEDULER_SESSION_AFFINITY_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
 import { createCodexUsageReader } from './usage.js'
 import { createQuotaForecastReader } from './quota-forecast.js'
 import { QuotaForecastStateStore } from './quota-forecast-store.js'
@@ -100,7 +100,6 @@ export function apply(ctx) {
   const searchProvider = createSearchProviderSwitcher(ctx.loader)
   const network = createCodexNetworkTransport()
   const originalImages = new OriginalImageStore()
-  let nativeTestAccountId
   const accountVault = ACCOUNT_VAULT_KEY !== undefined
     && typeof ctx.credentials.readRecord === 'function'
     && typeof ctx.credentials.modifyRecord === 'function'
@@ -114,9 +113,6 @@ export function apply(ctx) {
   const store = new DshOAuthCredentialStore(ctx.credentials, CREDENTIAL_REF, [LEGACY_CREDENTIAL_REF], {
     expirySkewMs: OAUTH_EXPIRY_SKEW_MS,
     vault: accountVault,
-    fallbackAccountId: () => normalizeAccountRoutingMode(settings.get()[ACCOUNT_ROUTING_MODE_FIELD]) === ACCOUNT_ROUTING_MODE_NATIVE
-      ? nativeTestAccountId
-      : undefined,
   })
   const schedulerConfig = () => ({
     strategy: normalizeSchedulerStrategy(settings.get()[SCHEDULER_STRATEGY_FIELD]),
@@ -162,7 +158,6 @@ export function apply(ctx) {
       ),
       [SEARCH_PROVIDER_FIELD]: settings.get()[SEARCH_PROVIDER_FIELD],
       [SPEED_MODE_FIELD]: settings.get()[SPEED_MODE_FIELD],
-      [ACCOUNT_ROUTING_MODE_FIELD]: normalizeAccountRoutingMode(settings.get()[ACCOUNT_ROUTING_MODE_FIELD]),
       [OUTPUT_VERBOSITY_FIELD]: normalizeOutputVerbosity(settings.get()[OUTPUT_VERBOSITY_FIELD]),
       [CONTEXT_MODE_FIELD]: normalizeContextMode(settings.get()[CONTEXT_MODE_FIELD]),
       [CUSTOM_CONTEXT_WINDOW_FIELD]: normalizeCustomContextWindow(settings.get()[CUSTOM_CONTEXT_WINDOW_FIELD]),
@@ -246,9 +241,7 @@ export function apply(ctx) {
   })
   const registeredAdapter = scheduler === undefined
     ? adapter
-    : new ScheduledCodexAdapter(adapter, scheduler, store, {
-        bypass: () => normalizeAccountRoutingMode(settings.get()[ACCOUNT_ROUTING_MODE_FIELD]) === ACCOUNT_ROUTING_MODE_NATIVE,
-      })
+    : new ScheduledCodexAdapter(adapter, scheduler, store)
   ctx.llm.registerAdapter([PROVIDER], registeredAdapter)
   const currentAgent = () => ctx.get?.('agents')?.currentInitiator?.()
   const codexSearch = createCodexSearchProvider({
@@ -292,8 +285,6 @@ export function apply(ctx) {
   const coordinator = new CodexLoginCoordinator(auth, {
     accountVault,
     scheduler,
-    getTestAccountId: () => nativeTestAccountId,
-    setTestAccountId: id => { nativeTestAccountId = id },
     getSchedulerConfig: schedulerConfig,
     updateSchedulerConfig: patch => settings.update({
       ...(patch.strategy === undefined ? {} : { [SCHEDULER_STRATEGY_FIELD]: patch.strategy }),

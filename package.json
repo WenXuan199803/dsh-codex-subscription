@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-subscription-sssv4",
-  "version": "2.1.16",
+  "version": "2.1.17",
   "packageManager": "pnpm@11.19.0",
   "description": "Use ChatGPT and Codex subscriptions in DeepSeek Harness with OAuth, quota, safe resets, web search, images, and Fast mode",
   "type": "module",

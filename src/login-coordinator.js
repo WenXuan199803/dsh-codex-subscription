@@ -71,8 +71,6 @@ export class CodexLoginCoordinator {
     this.createId = options.createId ?? (() => crypto.randomUUID())
     this.accountVault = options.accountVault
     this.scheduler = options.scheduler
-    this.getTestAccountId = options.getTestAccountId ?? (() => undefined)
-    this.setTestAccountId = options.setTestAccountId ?? (() => {})
     this.getSchedulerConfig = options.getSchedulerConfig ?? (() => this.accountVault?.scheduler?.())
     this.updateSchedulerConfig = options.updateSchedulerConfig ?? (patch => this.accountVault?.updateScheduler?.(patch))
   }
@@ -293,14 +291,6 @@ export class CodexLoginCoordinator {
     return publicClone(await this.auth.select(id))
   }
 
-  async selectTestAccount(id) {
-    if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
-    const accounts = await this.accountVault.list()
-    if (!accounts.some(account => account.id === id)) throw new Error('Unknown Codex account')
-    this.setTestAccountId(id)
-    return this.schedulerStatus()
-  }
-
   async removeAccount(id) {
     return publicClone(await this.auth.remove(id))
   }
@@ -320,16 +310,10 @@ export class CodexLoginCoordinator {
 
   async schedulerStatus() {
     if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
-    let testAccountId = this.getTestAccountId()
-    if (testAccountId === undefined) {
-      testAccountId = await this.accountVault.activeId()
-      if (testAccountId !== undefined) this.setTestAccountId(testAccountId)
-    }
     return {
       config: await this.getSchedulerConfig(),
       accounts: await this.accountVault.list(),
       runtime: this.scheduler?.snapshot?.() ?? { bindings: 0, cooldowns: [] },
-      testAccountId,
     }
   }
 
@@ -381,7 +365,6 @@ export function createCodexRpcHandler(coordinator, options = {}) {
       if (endpoint === 'login/cancel') return ok(await coordinator.cancel(input.id))
       if (endpoint === 'logout') return ok(await coordinator.logout({ signal }))
       if (endpoint === 'account/select') return ok(await coordinator.selectAccount(input.id))
-      if (endpoint === 'account/test-select') return ok(await coordinator.selectTestAccount(input.id))
       if (endpoint === 'account/remove') return ok(await coordinator.removeAccount(input.id))
       if (endpoint === 'account/import') return ok(await coordinator.importAccounts({ name: input.name, encoded: input.encoded }))
       if (endpoint === 'account/configure') return ok(await coordinator.configureAccount(input.id, {

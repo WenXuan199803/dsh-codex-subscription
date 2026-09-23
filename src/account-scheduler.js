@@ -178,12 +178,11 @@ async function* scopedIterator(store, accountId, iterable) {
 }
 
 export class ScheduledCodexAdapter extends LlmAdapter {
-  constructor(base, scheduler, store, options = {}) {
+  constructor(base, scheduler, store) {
     super()
     this.base = base
     this.scheduler = scheduler
     this.store = store
-    this.bypass = options.bypass ?? (() => false)
   }
 
   current(...args) { return typeof this.base.current === 'function' ? this.base.current(...args) : undefined }
@@ -197,16 +196,12 @@ export class ScheduledCodexAdapter extends LlmAdapter {
     const prepared = await this.base.prepareCall(provider, model, signal)
     return {
       model: prepared.model,
-      stream: options => this.bypass()
-        ? prepared.stream(options)
-        : this.run(options, value => prepared.stream(value)),
+      stream: options => this.run(options, value => prepared.stream(value)),
     }
   }
 
   stream(options) {
-    return this.bypass()
-      ? this.base.stream(options)
-      : this.run(options, value => this.base.stream(value))
+    return this.run(options, value => this.base.stream(value))
   }
 
   async *run(options, dispatch) {
