@@ -428,6 +428,12 @@ export class DshOAuthAccountVault {
               duplicates += 1
               continue
             }
+            // An old export must not replace a newer rotated refresh token.
+            if (sameAccountIdentity(current.credential, entry.credential)
+              && entry.credential.expires < current.credential.expires) {
+              duplicates += 1
+              continue
+            }
             // Re-importing the same OpenAI account refreshes only its OAuth
             // credential. Local scheduling metadata and the stable vault id stay put.
             accounts[index] = { ...current, credential: entry.credential }

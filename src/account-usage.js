@@ -3,9 +3,17 @@ const PUBLIC_USAGE_ERRORS = new Set([
   'ChatGPT sign-in needs to be renewed',
 ])
 
+const reusedRefreshToken = error => {
+  for (let cause = error, depth = 0; cause && depth < 5; cause = cause.cause, depth += 1) {
+    if (typeof cause.message === 'string' && /refresh_token_reused/u.test(cause.message)) return true
+  }
+  return false
+}
+
 const publicError = error => PUBLIC_USAGE_ERRORS.has(error?.message)
   ? error.message
-  : 'Could not read ChatGPT usage'
+  : reusedRefreshToken(error) ? 'ChatGPT sign-in needs to be renewed'
+    : 'Could not read ChatGPT usage'
 
 function planWeight(access) {
   try {

@@ -48,6 +48,17 @@ test('disabled accounts are not queried for usage', async () => {
   assert.deepEqual((await service.readAll()).accounts, [{ id: 'disabled', disabled: true }])
 })
 
+test('a reused refresh token is reported as a login problem without exposing provider details', async () => {
+  const service = createAccountUsageService({
+    accountVault: { async list() { return [{ id: 'own', enabled: true }] } },
+    store: { withAccount(_id, operation) { return operation() } },
+    createReader: () => ({ async read() {
+      throw new Error('OAuth refresh failed', { cause: new Error('private provider detail refresh_token_reused') })
+    } }),
+  })
+  assert.deepEqual((await service.readAll()).accounts, [{ id: 'own', error: 'ChatGPT sign-in needs to be renewed' }])
+})
+
 const access = plan => `header.${Buffer.from(JSON.stringify({
   'https://api.openai.com/auth': { chatgpt_plan_type: plan },
 })).toString('base64url')}.signature`

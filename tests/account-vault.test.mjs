@@ -149,6 +149,20 @@ test('re-importing the same account updates credentials in place and preserves s
   assert.deepEqual(raw.scheduler, { strategy: 'round-robin', sessionAffinity: false })
 })
 
+test('an older export cannot replace the active account after its refresh token rotates', async () => {
+  const current = { ...oauth('new'), accountId: 'same-account', expires: 1_900_000_000_000 }
+  const backend = memoryCredentials({ records: { accounts: { kind: 'grant', payload: {
+    version: 1, activeId: 'local-1',
+    accounts: [{ id: 'local-1', label: 'Own', credential: current, enabled: true }],
+  } } } })
+  const vault = new DshOAuthAccountVault(backend, { key: 'accounts', legacyRef: 'CODEX_OAUTH' })
+  const stale = { ...oauth('old'), accountId: 'same-account', expires: current.expires - 86_400_000 }
+  assert.deepEqual(await vault.importMany([{ label: 'Old copy', credential: stale }]), {
+    added: 0, updated: 0, duplicates: 1, total: 1,
+  })
+  assert.equal((await vault.readActive()).refresh, current.refresh)
+})
+
 test('re-import skips an identical credential and falls back to email only when account id is unavailable', async () => {
   const original = { ...oauth('one'), email: 'same@example.com' }
   delete original.accountId
