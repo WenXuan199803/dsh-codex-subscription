@@ -36,7 +36,7 @@ const quotaResetLabel = resetsAt => {
 function AccountQuota({ snapshot }) {
   if (snapshot === undefined) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaMuted">额度读取中…</span>
   if (snapshot.disabled) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaMuted">已停用，未查询额度</span>
-  if (snapshot.error) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaError">额度读取失败</span>
+  if (snapshot.error) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaError">{snapshot.error === 'ChatGPT sign-in needs to be renewed' ? '账号认证失效' : '额度读取失败'}</span>
   const limit = snapshot.usage?.rateLimits?.find(item => item.id === 'codex') ?? snapshot.usage?.rateLimits?.[0]
   const windows = limit?.windows ?? []
   if (windows.length === 0) return <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaMuted">暂无额度数据</span>
