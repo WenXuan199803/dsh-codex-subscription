@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { DshOAuthAccountVault } from '../src/account-vault.js'
+import { DshOAuthAccountVault, sanitizeOAuthCredential } from '../src/account-vault.js'
 import { createCodexAuthService, DshOAuthCredentialStore } from '../src/credential-store.js'
 
 const oauth = suffix => ({
@@ -10,6 +10,32 @@ const oauth = suffix => ({
   refresh: `refresh-${suffix}`,
   expires: 1_900_000_000_000,
   accountId: `account-${suffix}`,
+})
+
+test('a disabled active account is repaired and imported token identity is available to every service', async () => {
+  const access = `header.${Buffer.from(JSON.stringify({
+    'https://api.openai.com/auth': { chatgpt_account_id: 'account-live' },
+  })).toString('base64url')}.signature`
+  const live = { ...oauth('live'), access }
+  delete live.accountId
+  assert.equal(sanitizeOAuthCredential(live).accountId, 'account-live')
+  const backend = memoryCredentials({ records: {
+    accounts: { kind: 'grant', payload: {
+      version: 1, activeId: 'stale', accounts: [
+        { id: 'stale', label: 'Stale', credential: oauth('stale'), enabled: false },
+        { id: 'live', label: 'Live', credential: live, enabled: true },
+      ],
+    } },
+  } })
+  const vault = new DshOAuthAccountVault(backend, { key: 'accounts', legacyRef: 'CODEX_OAUTH' })
+  assert.equal((await vault.readActive()).accountId, 'account-live')
+  assert.equal((await vault.list()).find(account => account.active)?.id, 'live')
+  assert.equal(backend.readRecordRaw('accounts').payload.activeId, 'live')
+  await assert.rejects(vault.select('stale'), /disabled/u)
+  await vault.configure('live', { enabled: false })
+  assert.equal(await vault.readActive(), undefined)
+  await vault.configure('stale', { enabled: true })
+  assert.equal((await vault.list()).find(account => account.active)?.id, 'stale')
 })
 
 function memoryCredentials({ refs = {}, records = {} } = {}) {

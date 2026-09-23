@@ -52,6 +52,8 @@ function emailFromAccessToken(access) {
 /** Normalize the one non-secret account attribute that may cross the UI boundary. */
 export function sanitizeOAuthCredential(value) {
   const credential = assertOAuthCredential(value)
+  const tokenAccountId = decodeJwtPayload(credential.access)?.['https://api.openai.com/auth']?.chatgpt_account_id
+  if (typeof tokenAccountId === 'string' && tokenAccountId.length > 0) credential.accountId = tokenAccountId
   const email = emailFromAccessToken(credential.access) ?? normalizeAccountEmail(credential.email)
   if (email === undefined) {
     delete credential.email
@@ -191,7 +193,19 @@ export class DshOAuthAccountVault {
 
   async #ensurePayload() {
     const existing = await this.credentials.readRecord(this.key)
-    if (existing !== undefined) return assertVaultRecord(existing)
+    if (existing !== undefined) {
+      const payload = assertVaultRecord(existing)
+      if (payload.accounts.find(account => account.id === payload.activeId)?.enabled !== false) return payload
+      const replacement = payload.accounts.find(account => account.enabled !== false)
+      if (replacement === undefined) return payload
+      const repaired = await this.credentials.modifyRecord(this.key, current => {
+        const latest = assertVaultRecord(current)
+        if (latest.accounts.find(account => account.id === latest.activeId)?.enabled !== false) return current
+        const next = latest.accounts.find(account => account.enabled !== false)
+        return grant({ ...latest, activeId: next.id })
+      })
+      return assertVaultRecord(repaired)
+    }
     const legacy = await this.#legacyCredential()
     if (legacy === undefined) return undefined
     const id = this.createId()
@@ -254,7 +268,8 @@ export class DshOAuthAccountVault {
   readActive() {
     return this.#enqueue(async () => {
       const payload = await this.#ensurePayload()
-      return clone(payload?.accounts.find(account => account.id === payload.activeId)?.credential)
+      const active = payload?.accounts.find(account => account.id === payload.activeId)
+      return active?.enabled === false ? undefined : clone(active?.credential)
     })
   }
 
@@ -298,7 +313,10 @@ export class DshOAuthAccountVault {
           ...(patch.priority === undefined ? {} : { priority: patch.priority }),
           ...(patch.weight === undefined ? {} : { weight: patch.weight }),
         }
-        return { ...current, accounts }
+        const activeId = accounts.find(account => account.id === current.activeId)?.enabled === false
+          ? accounts.find(account => account.enabled !== false)?.id ?? current.activeId
+          : current.activeId
+        return { ...current, activeId, accounts }
       })
       return payload.accounts.map(account => ({
         id: account.id,
@@ -403,7 +421,9 @@ export class DshOAuthAccountVault {
   select(id) {
     return this.#enqueue(async () => {
       await this.#modifyPayload(current => {
-        if (!current.accounts.some(account => account.id === id)) throw new Error('Unknown Codex account')
+        const account = current.accounts.find(account => account.id === id)
+        if (account === undefined) throw new Error('Unknown Codex account')
+        if (account.enabled === false) throw new Error('Cannot select a disabled Codex account')
         return { ...current, activeId: id }
       })
     })

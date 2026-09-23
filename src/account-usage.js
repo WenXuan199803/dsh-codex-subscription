@@ -7,6 +7,38 @@ const publicError = error => PUBLIC_USAGE_ERRORS.has(error?.message)
   ? error.message
   : 'Could not read ChatGPT usage'
 
+function planWeight(access) {
+  try {
+    const payload = JSON.parse(Buffer.from(access.split('.')[1], 'base64url').toString('utf8'))
+    const plan = payload?.['https://api.openai.com/auth']?.chatgpt_plan_type?.toLowerCase?.()
+    if (plan === 'plus') return 1
+    if (['prolite', 'pro-lite', 'pro_lite', 'self_serve_business_prolite'].includes(plan)) return 5
+    if (plan === 'pro') return 20
+  } catch { /* Unknown plan is excluded rather than assigned an invented capacity. */ }
+  return undefined
+}
+
+function quotaWindow(usage, seconds) {
+  const windows = usage?.rateLimits?.find(limit => limit.id === 'codex')?.windows ?? []
+  const window = windows.find(item => Number.isFinite(item.windowSeconds)
+    && Math.abs(item.windowSeconds - seconds) <= seconds * 0.05)
+  return window === undefined ? undefined : {
+    remaining: window.remainingPercent,
+    resetAt: Number.isSafeInteger(window.resetsAt) ? window.resetsAt * 1_000 : null,
+  }
+}
+
+function aggregateWindow(rows, kind) {
+  const values = rows.map(row => row.windows?.[kind] && { ...row.windows[kind], weight: row.weight }).filter(Boolean)
+  const capacity = values.reduce((total, row) => total + row.weight, 0)
+  return {
+    remaining: capacity === 0 ? 0 : values.reduce((total, row) => total + row.remaining * row.weight, 0) / capacity,
+    loaded: values.length,
+    capacity,
+    resetAt: values.length === 1 ? values[0].resetAt : null,
+  }
+}
+
 export function createAccountUsageService({ accountVault, store, createReader }) {
   const readers = new Map()
   const readerFor = id => {
@@ -23,6 +55,10 @@ export function createAccountUsageService({ accountVault, store, createReader })
       const results = []
       for (const account of accounts) {
         signal?.throwIfAborted?.()
+        if (account.enabled === false) {
+          results.push({ id: account.id, disabled: true })
+          continue
+        }
         try {
           const usage = await store.withAccount(account.id, () => readerFor(account.id).read({ force, signal }))
           results.push({ id: account.id, usage })
@@ -32,6 +68,30 @@ export function createAccountUsageService({ accountVault, store, createReader })
         }
       }
       return { accounts: results, fetchedAt: Date.now() }
+    },
+    async readPool({ force = false, signal } = {}) {
+      const accounts = (await accountVault?.list?.() ?? []).filter(account => account.enabled !== false)
+      const rows = []
+      for (const account of accounts) {
+        signal?.throwIfAborted?.()
+        try {
+          const scopedCredential = await store.withAccount(account.id, () => store.read('openai-codex', { signal }))
+          const weight = planWeight(scopedCredential?.access)
+          if (weight === undefined) throw new Error('Unknown ChatGPT plan capacity')
+          const usage = await store.withAccount(account.id, () => readerFor(account.id).read({ force, signal }))
+          rows.push({ weight, windows: { '5h': quotaWindow(usage, 18_000), week: quotaWindow(usage, 604_800) } })
+        } catch (error) {
+          if (signal?.aborted) throw error
+          rows.push({ error: publicError(error) })
+        }
+      }
+      return {
+        total: accounts.length,
+        failed: rows.filter(row => row.error).length,
+        accounts: rows,
+        windows: { '5h': aggregateWindow(rows, '5h'), week: aggregateWindow(rows, 'week') },
+        fetchedAt: Date.now(),
+      }
     },
     clear(id) {
       if (id === undefined) {

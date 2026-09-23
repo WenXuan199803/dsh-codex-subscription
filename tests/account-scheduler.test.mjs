@@ -17,6 +17,9 @@ function vault(config = { strategy: 'fill-first', sessionAffinity: true }) {
 }
 
 test('classifies quota and overload failures for account failover', () => {
+  assert.deepEqual(classifyFailure({ code: 'PI_AI_ERROR', message: 'Encountered invalidated oauth token for user, failing request' }), {
+    retryable: true, reason: 'auth', cooldownMs: 60_000,
+  })
   assert.equal(classifyFailure({ status: 429, message: 'usage_limit_reached resets_in_seconds: 120' }).reason, 'quota')
   assert.equal(classifyFailure({ status: 503, message: 'server_is_overloaded' }).reason, 'transient')
   assert.equal(classifyFailure({ status: 400, message: 'bad request' }).retryable, false)

@@ -30,7 +30,8 @@ function classifyFailure(failure = {}) {
   if (status === 429 || code.includes('RATE_LIMIT')) {
     return { retryable: true, reason: 'rate-limit', cooldownMs: retryAfterMs ?? 30 * 1000 }
   }
-  if ([401, 403].includes(status) || /AUTH|UNAUTHORIZED|FORBIDDEN/.test(code)) {
+  if ([401, 403].includes(status) || /AUTH|UNAUTHORIZED|FORBIDDEN/.test(code)
+    || /invalidated oauth token|invalid(?:ated)? oauth access token/iu.test(message)) {
     return { retryable: true, reason: 'auth', cooldownMs: 60 * 1000 }
   }
   if ([408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526].includes(status)

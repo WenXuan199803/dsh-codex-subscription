@@ -113,6 +113,15 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, account
         return publicError('internal', 'Could not read account usage')
       }
     }
+    if (endpoint === 'usage/pool') {
+      try {
+        signal.throwIfAborted()
+        return { ok: true, value: await accountUsageService?.readPool({ force: payload?.force === true, signal }) ?? { total: 0, failed: 0, accounts: [], windows: {}, fetchedAt: Date.now() } }
+      } catch (error) {
+        if (signal.aborted) throw error
+        return publicError('internal', 'Could not read account pool usage')
+      }
+    }
     if (endpoint === 'usage') {
       try {
         signal.throwIfAborted()
