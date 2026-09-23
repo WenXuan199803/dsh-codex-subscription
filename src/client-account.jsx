@@ -62,6 +62,31 @@ export function AccountEmail({ candidate, fallback, t, emailVisible, onClick }) 
   >{emailVisible ? candidate.email : maskEmail(candidate.email)}</button>
 }
 
+function AccountSchedulingControls({ candidate, busy, onConfigure }) {
+  const priority = candidate.priority ?? 0
+  const weight = candidate.weight ?? 1
+  const [priorityDraft, setPriorityDraft] = useState(String(priority))
+  const [weightDraft, setWeightDraft] = useState(String(weight))
+  useEffect(() => setPriorityDraft(String(priority)), [candidate.id, priority])
+  useEffect(() => setWeightDraft(String(weight)), [candidate.id, weight])
+  const commit = (field, draft, original, minimum, maximum, reset) => {
+    if (draft.trim() === '') { reset(String(original)); return }
+    const value = Number(draft)
+    if (!Number.isInteger(value) || value < minimum || value > maximum) { reset(String(original)); return }
+    if (value !== original) onConfigure(candidate.id, { [field]: value })
+  }
+  return <div className="codexSubscriptionAccountSchedule">
+    <label>优先级 <input type="number" min="-1000" max="1000" step="1" value={priorityDraft} disabled={busy}
+      aria-label={`${candidate.label} 优先级`} onChange={event => setPriorityDraft(event.target.value)}
+      onBlur={() => commit('priority', priorityDraft, priority, -1000, 1000, setPriorityDraft)}
+      onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label>
+    <label>权重 <input type="number" min="1" max="100" step="1" value={weightDraft} disabled={busy}
+      aria-label={`${candidate.label} 权重`} onChange={event => setWeightDraft(event.target.value)}
+      onBlur={() => commit('weight', weightDraft, weight, 1, 100, setWeightDraft)}
+      onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label>
+  </div>
+}
+
 export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
   const [flow, setFlow] = useState()
   const flowGeneration = useRef(0)
@@ -285,6 +310,7 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
         <label>调度策略 <select disabled={busy || scheduler.config?.fixedAccountId !== undefined} value={scheduler.config?.strategy ?? 'fill-first'} onChange={event => updateScheduler({ strategy: event.currentTarget.value })}>
           <option value="fill-first">依次用满</option>
           <option value="round-robin">轮询</option>
+          <option value="weighted-round-robin">加权轮询</option>
         </select></label>
         <label>固定账号（测试） <select disabled={busy} value={scheduler.config?.fixedAccountId ?? ''} onChange={event => updateScheduler({ fixedAccountId: event.currentTarget.value || null })}>
           <option value="">关闭固定模式</option>
@@ -293,9 +319,10 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
         <label><input type="checkbox" disabled={busy || scheduler.config?.fixedAccountId !== undefined} checked={scheduler.config?.sessionAffinity !== false} onChange={event => updateScheduler({ sessionAffinity: event.currentTarget.checked })} /> 同一对话固定账号</label>
         {scheduler.config?.fixedAccountId === undefined ? null : <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaMuted">固定模式：所有对话只使用所选账号，不轮询、不自动切号</span>}
       </div>
+      <p className="codexSubscriptionPreferenceHint">先选择优先级最高的已启用账号；同级账号再按所选策略调度。权重只用于加权轮询；同一对话固定账号时，轮询只影响新对话。</p>
     </div> : null}
     {signedIn && failedAccounts.length > 0 ? <p className="codexSubscriptionError" role="status">{failedAccounts.length} 个账号额度不可读：{failedAccounts.map(candidate => candidate.email ? maskEmail(candidate.email) : candidate.label).join('、')}。这不代表订阅到期；请先刷新额度，持续失败时检查登录凭据。</p> : null}
-    {signedIn && accounts.length > 0 ? <div className="codexSubscriptionAccounts">{accounts.map(candidate => <div className="codexSubscriptionAccount" data-active={candidate.active} key={candidate.id}><div className="codexSubscriptionAccountCopy"><div className="codexSubscriptionAccountName"><AccountEmail candidate={candidate} fallback={candidate.label} t={t} emailVisible={emailVisibleForAccount} onClick={toggleEmail} /><span className="codexSubscriptionAccountState">{candidate.enabled === false ? '已停用' : '已启用'}</span></div><AccountQuota snapshot={accountUsage[candidate.id]} /></div><div className="codexSubscriptionActions"><Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => configureAccount(candidate.id, { enabled: candidate.enabled === false })}>{candidate.enabled === false ? '启用' : '停用'}</Button>{candidate.active || candidate.enabled === false ? null : <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => selectAccount(candidate.id)}>{t('switchAccount')}</Button>}{accounts.length > 1 ? <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => removeAccount(candidate.id)}>{removeId === candidate.id ? t('removeConfirm') : t('removeAccount')}</Button> : null}{removeId === candidate.id ? <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoveId(undefined)}>{t('removeCancel')}</Button> : null}</div></div>)}</div> : null}
+    {signedIn && accounts.length > 0 ? <div className="codexSubscriptionAccounts">{accounts.map(candidate => <div className="codexSubscriptionAccount" data-active={candidate.active} key={candidate.id}><div className="codexSubscriptionAccountCopy"><div className="codexSubscriptionAccountName"><AccountEmail candidate={candidate} fallback={candidate.label} t={t} emailVisible={emailVisibleForAccount} onClick={toggleEmail} /><span className="codexSubscriptionAccountState">{candidate.enabled === false ? '已停用' : '已启用'}</span></div><AccountQuota snapshot={accountUsage[candidate.id]} /><AccountSchedulingControls candidate={candidate} busy={busy || loginVisible} onConfigure={configureAccount} /></div><div className="codexSubscriptionActions"><Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => configureAccount(candidate.id, { enabled: candidate.enabled === false })}>{candidate.enabled === false ? '启用' : '停用'}</Button>{candidate.active || candidate.enabled === false ? null : <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => selectAccount(candidate.id)}>{t('switchAccount')}</Button>}{accounts.length > 1 ? <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => removeAccount(candidate.id)}>{removeId === candidate.id ? t('removeConfirm') : t('removeAccount')}</Button> : null}{removeId === candidate.id ? <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoveId(undefined)}>{t('removeCancel')}</Button> : null}</div></div>)}</div> : null}
     {signedIn && adding && flow === undefined ? <div className="codexSubscriptionFlow"><div className="codexSubscriptionActions"><Button type="button" variant="primary" disabled={busy} onClick={() => begin('browser')}>{t('browserLogin')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => begin('device_code')}>{t('deviceLogin')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => setAdding(false)}>{t('cancel')}</Button></div></div> : null}
     {flow?.phase === 'waiting_device' ? <div className="codexSubscriptionFlow"><p>{t('deviceHint')}</p><code className="codexSubscriptionCode">{flow.deviceCode?.userCode}</code><a href={flow.deviceCode?.verificationUri} target="_blank" rel="noreferrer">{t('openLogin')}</a><p>{t('waiting')}</p><Button type="button" variant="outline" disabled={busy} onClick={cancel}>{t('cancel')}</Button></div> : null}
     {flow?.phase === 'waiting_input' ? <form className="codexSubscriptionFlow" onSubmit={submit}><p>{t('manualCode')}</p><Input className="codexSubscriptionInput" value={manualCode} onChange={event => setManualCode(event.currentTarget.value)} autoComplete="off" spellCheck={false} /><div className="codexSubscriptionActions"><Button type="submit" variant="primary" disabled={busy || manualCode.trim() === ''}>{t('submit')}</Button><Button type="button" variant="outline" disabled={busy} onClick={cancel}>{t('cancel')}</Button></div></form> : null}

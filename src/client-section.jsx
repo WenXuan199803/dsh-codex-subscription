@@ -5,12 +5,17 @@ import { PreferencesCard } from './client-preferences.jsx'
 import { AccountCard, AccountFailureCard } from './client-account.jsx'
 import { DiagnosticsCard } from './client-diagnostics.jsx'
 import { UsageCard } from './client-usage.jsx'
+import { usageCache } from './client-usage-cache.js'
 export function CodexSection({ preference, rpc, accountStatus, t }) {
   const [tab, setTab] = useState('account')
   const id = useId()
   const tabs = ['account', 'advanced']
   const accountSnapshot = useAccountStatusSnapshot(accountStatus)
   const account = accountSnapshot.account
+  const accountKeys = (account?.accounts ?? []).map(candidate => candidate.id).filter(Boolean)
+  const accountKeysKey = accountKeys.join('|')
+  const activeAccountId = account?.accounts?.find(candidate => candidate.active)?.id
+    ?? (accountKeys.length === 0 ? 'legacy' : undefined)
   const [resetKey, setResetKey] = useState(0)
   const setAccount = accountStatus.acceptAccount
   const accountChanged = () => {
@@ -21,6 +26,10 @@ export function CodexSection({ preference, rpc, accountStatus, t }) {
     void accountStatus.load()
     void preference.refreshModels()
   }, [accountStatus, preference])
+  useEffect(() => {
+    if (account?.authenticated === false) usageCache.clear()
+    else if (account?.authenticated === true) usageCache.prune(accountKeys.length === 0 ? ['legacy'] : accountKeys)
+  }, [account?.authenticated, accountKeysKey])
   return <section className="codexSubscription">
     <div className="codexSubscriptionHead"><h2>{t('title')}</h2></div>
     <div className="codexSettingsTabs" role="tablist" aria-label={t('title')}>
@@ -33,7 +42,7 @@ export function CodexSection({ preference, rpc, accountStatus, t }) {
     </div>
     <div role="tabpanel" id={`${id}-account`} aria-labelledby={`${id}-account-tab`} hidden={tab !== 'account'}>
     {accountSnapshot.status === 'error' ? <AccountFailureCard accountStatus={accountStatus} snapshot={accountSnapshot} t={t} rpc={rpc} onRecovered={accountChanged} /> : <AccountCard rpc={rpc} t={t} account={account} setAccount={setAccount} onSignedOut={accountChanged} />}
-    {account === undefined ? null : <UsageCard key={resetKey} rpc={rpc} t={t} signedIn={account.authenticated === true} resetKey={resetKey} preference={preference} />}
+    {account === undefined ? null : <UsageCard key={`${activeAccountId ?? 'unknown'}:${resetKey}`} rpc={rpc} t={t} signedIn={account.authenticated === true} accountKey={activeAccountId} resetKey={resetKey} preference={preference} />}
     <PreferencesCard rpc={rpc} preference={preference} t={t} />
     </div>
     <div role="tabpanel" id={`${id}-advanced`} aria-labelledby={`${id}-advanced-tab`} hidden={tab !== 'advanced'}><PreferencesCard rpc={rpc} preference={preference} t={t} section="advanced" /><ImagePreferences preference={preference} t={t} /><DiagnosticsCard rpc={rpc} t={t} /></div>

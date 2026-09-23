@@ -2,6 +2,7 @@ import { recoveryCall } from './client-recovery.js'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from './client-primitives.js'
 import { CHANNEL, unwrap, fill, percent, windowLabel, validDate, notifyQuickQuota, formatQuotaForecast } from './client-shared.js'
+import { usageCache } from './client-usage-cache.js'
 export function ResetTime({ resetsAt, t }) {
   const date = Number.isSafeInteger(resetsAt) ? validDate(resetsAt * 1_000) : undefined
   if (date === undefined) return <span>{t('resetUnknown')}</span>
@@ -122,8 +123,9 @@ export function resetCreditErrorText(error, t) {
   return t(key ?? 'resetFailed')
 }
 
-export function UsageCard({ rpc, t, signedIn, resetKey, preference }) {
-  const [usage, setUsage] = useState()
+export function UsageCard({ rpc, t, signedIn, accountKey, resetKey, preference }) {
+  const [usage, setUsage] = useState(() => signedIn ? usageCache.read(accountKey) : undefined)
+  const [cached, setCached] = useState(() => signedIn && usageCache.read(accountKey) !== undefined)
   const [usageRefreshGeneration, setUsageRefreshGeneration] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState()
@@ -136,6 +138,8 @@ export function UsageCard({ rpc, t, signedIn, resetKey, preference }) {
       .then(next => {
         if (request.current === id) {
           setUsage(next)
+          setCached(false)
+          usageCache.write(accountKey, next)
           setUsageRefreshGeneration(value => value + 1)
           if (force) notifyQuickQuota()
         }
@@ -144,11 +148,14 @@ export function UsageCard({ rpc, t, signedIn, resetKey, preference }) {
       .finally(() => { if (request.current === id) setBusy(false) })
   }
   useEffect(() => {
-    setUsage(undefined)
-    if (signedIn) load(false)
-    else { request.current += 1; setUsage(undefined); setError(undefined); setBusy(false) }
+    if (signedIn) {
+      const previous = usageCache.read(accountKey)
+      setUsage(previous)
+      setCached(previous !== undefined)
+      load(false)
+    } else { request.current += 1; setUsage(undefined); setCached(false); setError(undefined); setBusy(false) }
     return () => { request.current += 1 }
-  }, [signedIn, resetKey])
+  }, [signedIn, accountKey, resetKey])
   const visibleUsage = signedIn ? usage : undefined
   const limits = visibleUsage?.rateLimits ?? []
   const exhausted = limits.some(limit => limit.id !== 'code_review'
@@ -164,6 +171,7 @@ export function UsageCard({ rpc, t, signedIn, resetKey, preference }) {
     <div aria-live="polite">
       {!signedIn ? <p className="codexSubscriptionEmpty">{t('noUsage')}</p> : null}
       {signedIn && busy && usage === undefined ? <p className="codexSubscriptionEmpty" role="status">{t('usageLoading')}</p> : null}
+      {signedIn && usage !== undefined && (busy || cached || error !== undefined) ? <p className="codexSubscriptionCreditNote" role="status">{t(error !== undefined ? 'usagePreviousAfterError' : busy ? 'usagePreviousRefreshing' : 'usagePrevious')}</p> : null}
       {signedIn && !busy && error === undefined && usage !== undefined && !hasUsageDetails ? <p className="codexSubscriptionEmpty" role="status">{t('usageEmpty')}</p> : null}
     </div>
     {error === undefined ? null : <p className="codexSubscriptionError" role="alert">{error}</p>}

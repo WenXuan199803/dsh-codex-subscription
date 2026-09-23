@@ -76,6 +76,10 @@ export const STYLE = `
 .codexSubscriptionAccountQuotaWindow small{font-size:10px;color:var(--dsw-alias-label-tertiary)}
 .codexSubscriptionAccountQuotaMuted{color:var(--dsw-alias-label-tertiary)}
 .codexSubscriptionAccountQuotaError{color:var(--dsw-alias-state-error-primary)}
+.codexSubscriptionAccountSchedule{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap}
+.codexSubscriptionAccountSchedule label{display:flex;align-items:center;gap:4px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:20px}
+.codexSubscriptionAccountSchedule input{box-sizing:border-box;width:58px;height:24px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:0 5px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;text-align:right}
+.codexSubscriptionAccountSchedule input:disabled{opacity:.55}
 .codexSubscriptionAccount:last-child{border-bottom:0}
 .codexSubscriptionAccount[data-active=true] .codexSubscriptionEmail,.codexSubscriptionAccount[data-active=true]>span{font-weight:600}
 .codexSubscriptionEmail{max-width:100%;overflow:hidden;padding:2px 4px;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
