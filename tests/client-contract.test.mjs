@@ -5,7 +5,7 @@ import test from 'node:test'
 const read = path => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 // These contracts cover the client entry and its authored copy, styles and download helper.
 const text = path => path === 'src/client.jsx'
-  ? Promise.all([path, 'src/rpc-contract.js', 'src/client-shared.js', 'src/client-account.jsx', 'src/client-composer-quota.jsx', 'src/client-diagnostics.jsx', 'src/client-model-select.jsx', 'src/client-preferences.jsx', 'src/client-quota.jsx', 'src/client-section.jsx', 'src/client-usage.jsx', 'src/client-locales.js', 'src/client-styles.js', 'src/client-images.jsx', 'src/original-image-download.js'].map(read)).then(parts => parts.join('\n'))
+  ? Promise.all([path, 'src/rpc-contract.js', 'src/client-shared.js', 'src/client-account.jsx', 'src/client-composer-quota.jsx', 'src/client-diagnostics.jsx', 'src/client-model-select.jsx', 'src/client-preferences.jsx', 'src/client-runtime-management.jsx', 'src/client-quota.jsx', 'src/client-section.jsx', 'src/client-usage.jsx', 'src/client-locales.js', 'src/client-styles.js', 'src/client-images.jsx', 'src/original-image-download.js'].map(read)).then(parts => parts.join('\n'))
   : path === 'src/index.js' ? Promise.all([path, 'src/subscription-rpc.js'].map(read)).then(parts => parts.join('\n')) : read(path)
 
 test('generated image loader uses the installed DSH UI conversation image API', async () => {
@@ -28,7 +28,7 @@ test('client is one removable DSH settings section, not a second application she
   assert.match(source, /slots\.inject\(['"]settings\.section['"]/)
   assert.match(source, /id:\s*['"]codex-subscription['"]/)
   assert.match(source, /['"]\/codex-subscription['"]/) // RPC channel
-  const withoutRepositorySupportLink = source.replace('https://github.com/WSL043/dsh-codex-subscription/issues/new?template=install-problem.yml', '')
+  const withoutRepositorySupportLink = source.replace('https://github.com/WSL043/dsh-codex-subscription/issues/new?template=install-problem.yml', '').replace('https://github.com/WSL043/dsh-codex-subscription/blob/main/README.md#codex-subtask-runtime', '')
   assert.doesNotMatch(withoutRepositorySupportLink, /wsl043/iu)
   assert.match(source, /login\/start/)
   assert.match(source, /login\/status/)
@@ -63,7 +63,7 @@ test('composer quota modes use the public composer slot before the model selecto
   assert.match(client, /ctx\.inject\(\[['"]remote\.session['"]\], installDirectorySlots\)/u)
   assert.match(client, /scope\.get\(['"]modelDirectories['"]\)/u)
   assert.doesNotMatch(client, /sidebar\.footer\.action/u)
-  assert.match(client, /settingsScope\.bind\(\{\s*namespace:\s*SETTINGS_NAMESPACE\s*\}\)/u)
+  assert.match(client, /ctx\.get\('settingsScope'\)\?\.bind\(\{\s*namespace:\s*SETTINGS_NAMESPACE\s*\}\)/u)
   assert.match(controller, /scope\.set\(field,\s*value\)/u)
   assert.match(controller, /preferences\/status/u)
   assert.match(controller, /preferences\/update/u)
@@ -81,7 +81,7 @@ test('composer quota modes use the public composer slot before the model selecto
   assert.doesNotMatch(client, /onPointerDown|onMouseDown|onContextMenu/u)
   assert.doesNotMatch(client, /localStorage|sessionStorage/u)
   assert.match(host, /export const inject = \[[^\]]*['"]settings['"]/u)
-  assert.match(host, /ctx\.settings\.register/u)
+  assert.match(host, /createSettingsAdapter\(ctx,/u)
   assert.match(host, /settings\.watch/u)
   assert.match(host, /preferences\/status/u)
   assert.match(host, /preferences\/update/u)
@@ -143,9 +143,8 @@ test('settings offer automatic and explicit search plus formal composer quota di
   assert.match(source, /Auto follows the current session model/u)
   assert.match(source, /role=['"]radiogroup['"]/u)
   assert.match(source, /type=['"]radio['"]/u)
-  assert.match(source, /className=['"]codexSubscriptionSearchInput['"]/u)
-  assert.match(source, /\.codexSubscriptionSearchInput\{[^}]*width:\s*14px[^}]*height:\s*14px/u)
-  assert.doesNotMatch(source, /\.codexSubscriptionSearchChoice input\{[^}]*opacity:\s*0/u)
+  assert.match(source, /name=['"]codex-subscription-search-provider['"]/u)
+  assert.match(source, /codexSubscriptionSearchChoices codexSubscriptionQuotaModes/u)
   assert.doesNotMatch(source, /role=['"]radio['"]/u)
   assert.match(source, /preferenceFailed/u)
   assert.match(source, /snapshot\.error/u)
@@ -467,21 +466,4 @@ test('generated Codex images use a DSH-tokenized native viewer across supported 
   assert.match(source, /block\.content/u)
   assert.match(manifest, /@deepseek-ai\/dsh-client-ui-tool/u)
   assert.doesNotMatch(config, /@deepseek-ai\/dsh-client-ui-attachment/u)
-})
-
-
-test('account UI exposes unambiguous A/B test state and per-account test selection', async () => {
-  const source = await read('src/client-account.jsx')
-  assert.match(source, /当前链路：原生直通/u)
-  assert.match(source, /当前链路：多账号调度/u)
-  assert.match(source, /当前测试账号/u)
-  assert.match(source, /用此账号测试/u)
-  assert.match(source, /速度：/u)
-})
-
-
-test('native account test selection never uses the persistent account/select route', async () => {
-  const source = await read('src/client-account.jsx')
-  assert.match(source, /call\(['"]account\/test-select['"],\s*\{ id \}\)/u)
-  assert.match(source, /selectTestAccount\(candidate\.id\)/u)
 })

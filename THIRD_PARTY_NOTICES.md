@@ -5,12 +5,13 @@ This project depends on software distributed under its own terms. The dependency
 | Project | Role | License | Source |
 | --- | --- | --- | --- |
 | DeepSeek Harness packages | Plugin host, client slots, credential and LLM interfaces | MIT | https://github.com/deepseek-ai/deepseek-harness |
+| `@openai/codex` 0.153.4 | Optional official DSH Codex subagent runtime, installed as a dependency | Apache-2.0 | https://github.com/openai/codex |
 | `@earendil-works/pi-ai` 0.82.1 | OpenAI Codex OAuth, model catalog, Responses transport, and WebSocket continuation | MIT | https://github.com/earendil-works/pi |
 | React | DSH settings component runtime | MIT | https://github.com/facebook/react |
 | dsh-image-viewer 0.1.0-beta.9 (3d121d3), with 0.1.0 (7f3be2c) zoom and annotation improvements | Adapted built-in image viewer, interaction state, and styles | MIT, Copyright (c) 2026 WSL043; full license included in LICENSE | https://github.com/WSL043/dsh-image-viewer |
 | Heroicons | Composer speed icon | MIT | https://github.com/tailwindlabs/heroicons |
 | `https-proxy-agent` 7.0.6 | HTTPS proxy transport for Codex OAuth token requests | MIT | https://github.com/TooTallNate/proxy-agents |
-| `ws` 8.21.3 | Header-capable WebSocket client for authenticated Codex Responses transport | MIT | https://github.com/websockets/ws |
+| `ws` 8.21.3 | Request-scoped subscription WebSocket transport | MIT | https://github.com/websockets/ws |
 | QuotaPin for Codex | Design basis for the opt-in local quota runway forecast | MIT | https://github.com/WSL043/QuotaPin-for-Codex |
 | tsdown | Development-time bundler | MIT | https://github.com/rolldown/tsdown |
 
@@ -98,8 +99,7 @@ THE SOFTWARE.
 ## OpenAI Codex request protocol adaptation
 
 The Responses Lite envelope and tool namespace adaptation in `src/codex-request.js`
-follow `openai/codex` commit `b7add4df3d95e2d41249e54d3c3a1bd14680848a`,
-`codex-rs/core/src/client.rs` and `codex-rs/tools/src/tool_spec.rs`.
-This JavaScript adaptation is modified from the Rust design to preserve DSH's
-message, tool and account ownership. OpenAI Codex, Copyright 2025 OpenAI,
-is licensed under Apache License 2.0; see the included `CODEX-LICENSE.txt`.
+follows the public `openai/codex` request and tool serialization design pinned during
+ShangShuSheng integration. The JavaScript adaptation preserves DSH message, tool,
+and account ownership. OpenAI Codex is licensed under Apache License 2.0; see
+`CODEX-LICENSE.txt`.

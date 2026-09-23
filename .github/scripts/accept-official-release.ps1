@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string] $PackagePath,
-    [string] $DshVersion = '0.1.5-rc.1',
+    [string] $DshVersion = '0.1.5-rc.2',
     [string] $Profile = 'web',
     [ValidateSet('npx', 'pnpm')][string] $DshRunner = 'npx',
     [int] $StartupTimeoutSeconds = 45
@@ -29,11 +29,17 @@ function Initialize-Runner {
     $runnerRoot = Join-Path $acceptanceRoot 'runner'
     New-Item -ItemType Directory -Path $runnerRoot | Out-Null
     [IO.File]::WriteAllText((Join-Path $runnerRoot 'package.json'), '{"private":true}')
+    & node (Join-Path $PSScriptRoot 'pin-official-cohort.mjs') $runnerRoot $DshVersion
+    if ($LASTEXITCODE -ne 0) { throw 'Official DSH cohort pinning failed.' }
+    # The isolated CI checkout intentionally has no development node_modules.
+    # Materialize the one test-only browser storage emulator beside the runner.
+    $sourceManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../package.json') -Raw | ConvertFrom-Json
+    $indexedDbVersion = $sourceManifest.devDependencies.'fake-indexeddb'
+    if (-not $indexedDbVersion) { throw 'Missing IndexedDB test dependency version.' }
     & $runner.Source `
         --dir $runnerRoot `
         --config.minimum-release-age=0 `
         add `
-        --ignore-workspace `
         --save-exact `
         '--allow-build=@deepseek-ai/dsh-subprocess-local' `
         '--allow-build=@google/genai' `
@@ -41,7 +47,8 @@ function Initialize-Runner {
         '--allow-build=koffi' `
         '--allow-build=node-pty' `
         '--allow-build=protobufjs' `
-        "@deepseek-ai/dsh@$DshVersion"
+        "@deepseek-ai/dsh@$DshVersion" `
+        "fake-indexeddb@$indexedDbVersion"
     if ($LASTEXITCODE -ne 0) { throw 'Official DSH runner materialization failed.' }
 
     $installedManifest = Get-Content -LiteralPath `
@@ -59,7 +66,8 @@ function Initialize-Runner {
 function Invoke-Dsh {
     param([Parameter(Mandatory = $true)][string[]] $Arguments)
 
-    & $runner.Source @runnerPrefix @Arguments
+    Write-Host "Official DSH: $($Arguments -join ' ')"
+    & node (Join-Path $PSScriptRoot 'run-official-cli.mjs') $runner.Source @runnerPrefix @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "Official DSH command failed with exit code $LASTEXITCODE."
     }
@@ -143,17 +151,17 @@ try {
     Initialize-Runner
     $latest = (& pnpm view dsh-codex-subscription dist-tags.latest --json 2>$null | Out-String).Trim().Trim('"')
     if ($LASTEXITCODE -eq 0 -and $latest -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
-        Invoke-Dsh @('plugin', '--profile', $Profile, 'add', "dsh-codex-subscription@$latest", '--loglevel', 'error')
+        Invoke-Dsh @('plugin', '--profile', $Profile, 'add', "dsh-codex-subscription@$latest", '--reporter', 'append-only')
     }
 
-    Invoke-Dsh @('plugin', '--profile', $Profile, 'add', $package, '--loglevel', 'error')
+    Invoke-Dsh @('plugin', '--profile', $Profile, 'add', $package, '--reporter', 'append-only')
     Assert-InstalledOnce
     Start-And-ProbeWeb
 
-    Invoke-Dsh @('plugin', '--profile', $Profile, 'remove', 'dsh-codex-subscription', '--loglevel', 'error')
+    Invoke-Dsh @('plugin', '--profile', $Profile, 'remove', 'dsh-codex-subscription', '--reporter', 'append-only')
     Assert-Removed
 
-    Invoke-Dsh @('plugin', '--profile', $Profile, 'add', $package, '--loglevel', 'error')
+    Invoke-Dsh @('plugin', '--profile', $Profile, 'add', $package, '--reporter', 'append-only')
     Assert-InstalledOnce
     Write-Host 'Official DSH end-to-end acceptance passed.'
 } finally {

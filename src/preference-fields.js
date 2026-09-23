@@ -10,6 +10,9 @@ import {
 
 // One enum contract feeds persisted Host schemas and RPC writes.
 export const PREFERENCE_FIELDS = Object.freeze({
+  compactionMode: { choices: ['dsh', 'cloud'], default: 'dsh', error: 'Invalid compaction mode' },
+  connectionMode: { choices: ['sse', 'websocket'], default: 'sse', error: 'Invalid connection mode' },
+  subagentBackend: { choices: ['dsh', 'codex'], default: 'dsh', error: 'Invalid subagent backend' },
   [QUICK_QUOTA_MODE_FIELD]: { choices: [QUICK_QUOTA_MODE_OFF, QUICK_QUOTA_MODE_PERCENT, QUICK_QUOTA_MODE_BAR, QUICK_QUOTA_MODE_FORECAST], error: 'Invalid quick quota preference' },
   [SEARCH_PROVIDER_FIELD]: { choices: [SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_DSH, SEARCH_PROVIDER_CODEX], default: DEFAULT_SEARCH_PROVIDER, error: 'Invalid search provider preference' },
   [SPEED_MODE_FIELD]: { choices: [SPEED_MODE_STANDARD, SPEED_MODE_FAST], default: DEFAULT_SPEED_MODE, error: 'Invalid speed mode preference' },

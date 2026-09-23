@@ -1,5 +1,11 @@
+import { createSettingsAdapter } from './settings-adapter.js'
 import { PREFERENCE_FIELDS } from './preference-fields.js'
+import { createSubscriptionConnection } from './subscription-connection.js'
+import { createCompactionBridge } from './subscription-compaction.js'
 import { registerSubscriptionTransport } from './subscription-transport.js'
+import { createSubagentBackendSwitcher, createSubscriptionSubagent, loadSubagentRuntime } from './subagent-backend.js'
+import { inspectSubagentRuntime } from './subagent-runtime.js'
+import { createRuntimeManagement } from './runtime-management.js'
 import { createSketchAgentBridge } from './sketch-agent-bridge.js'
 import { createSketchAgentTool } from './sketch-agent-tool.js'
 import { registerSketchCodec } from './sketch-codec-route.js'
@@ -16,7 +22,7 @@ import { CodexLoginCoordinator, createCodexRpcHandler } from './login-coordinato
 import { createCodexNetworkTransport } from './oauth-network.js'
 import { createModels, openaiCodexProvider, openaiCodexSubscriptionProvider } from './pi-ai-runtime.js'
 import { createOfficialModelCatalog } from './model-catalog.js'
-import { readCapabilitySettings, CUSTOM_CONTEXT_OVERRIDES_FIELD, SEARCH_MODE_FIELD, SEARCH_MODES, SEARCH_DOMAINS_FIELD, QUOTA_ALERTS_FIELD, QUOTA_ALERT_MODES, QUOTA_THRESHOLD_FIELDS, MAX_CONTEXT_BUDGET } from './capability-settings.js'
+import { readCapabilitySettings, normalizeSearchDomains, CUSTOM_CONTEXT_OVERRIDES_FIELD, SEARCH_MODE_FIELD, SEARCH_MODES, SEARCH_DOMAINS_FIELD, QUOTA_ALERTS_FIELD, QUOTA_ALERT_MODES, QUOTA_THRESHOLD_FIELDS, MAX_CONTEXT_BUDGET } from './capability-settings.js'
 import { CODEX_AUTO_SEARCH_PROVIDER_ID, CODEX_SEARCH_PROVIDER_ID, createCodexAutoSearchProvider, createCodexSearchProvider } from './codex-search.js'
 import { createCodexImageTool } from './codex-images.js'
 import { IMAGE_FEATURE_DEFAULTS } from './image-features.js'
@@ -82,21 +88,24 @@ export function createSearchProviderSwitcher(loader) {
   })
 }
 
-export function apply(ctx) {
-  const settings = ctx.settings.register(SETTINGS_NAMESPACE, z.object({
-    ...Object.fromEntries(Object.entries(PREFERENCE_FIELDS).map(([field, rule]) => [field, rule.default === undefined ? z.union(rule.choices) : z.union(rule.choices).default(rule.default)])),
-    imageModel: z.union(Object.keys(IMAGE_MODELS)).default(DEFAULT_IMAGE_MODEL),
-    imageQuality: z.union(['auto','low','medium','high','xhigh','max']).default('auto'),
-    ...Object.fromEntries(Object.entries(IMAGE_FEATURE_DEFAULTS).map(([key, value]) => [key, z.boolean().default(value)])),
-    [CUSTOM_CONTEXT_OVERRIDES_FIELD]: z.dict(z.number().step(1).min(1).max(MAX_CONTEXT_BUDGET)).default({}),
-    [SEARCH_MODE_FIELD]: z.union(SEARCH_MODES).default('live'),
-    [SEARCH_DOMAINS_FIELD]: z.transform(z.array(z.string()).max(20), value => readCapabilitySettings({ searchDomains: value }).searchDomains).default([]),
-    ...Object.fromEntries(QUOTA_THRESHOLD_FIELDS.map(key => [key, z.number().step(1).min(1).max(100).default(20)])),
-    [QUOTA_ALERTS_FIELD]: z.union(QUOTA_ALERT_MODES).default('important'),
-    [LEGACY_QUICK_QUOTA_FIELD]: z.boolean(),
-    [CUSTOM_CONTEXT_WINDOW_FIELD]: z.number().step(1).min(128_000).max(1_000_000).default(DEFAULT_CUSTOM_CONTEXT_WINDOW),
-    ...Object.fromEntries(Object.entries(CUSTOM_CONTEXT_MODEL_FIELDS).map(([modelKey, field]) => [field, z.number().step(1).min(128_000).max(CUSTOM_CONTEXT_MODEL_CAPS[modelKey]).default(CUSTOM_CONTEXT_MODEL_DEFAULTS[modelKey])])),
-  }))
+const settingsFields = {
+  ...Object.fromEntries(Object.entries(PREFERENCE_FIELDS).map(([field, rule]) => [field, rule.default === undefined ? z.union(rule.choices) : z.union(rule.choices).default(rule.default)])),
+  imageModel: z.union(Object.keys(IMAGE_MODELS)).default(DEFAULT_IMAGE_MODEL),
+  imageQuality: z.union(['auto','low','medium','high','xhigh','max']).default('auto'),
+  ...Object.fromEntries(Object.entries(IMAGE_FEATURE_DEFAULTS).map(([key, value]) => [key, z.boolean().default(value)])),
+  [CUSTOM_CONTEXT_OVERRIDES_FIELD]: z.dict(z.number().step(1).min(1).max(MAX_CONTEXT_BUDGET)).default({}),
+  [SEARCH_MODE_FIELD]: z.union(SEARCH_MODES).default('live'),
+  [SEARCH_DOMAINS_FIELD]: z.transform(z.array(z.string()).max(20), normalizeSearchDomains).default([]),
+  ...Object.fromEntries(QUOTA_THRESHOLD_FIELDS.map(key => [key, z.number().step(1).min(1).max(100).default(20)])),
+  [QUOTA_ALERTS_FIELD]: z.union(QUOTA_ALERT_MODES).default('important'),
+  [LEGACY_QUICK_QUOTA_FIELD]: z.boolean(),
+  [CUSTOM_CONTEXT_WINDOW_FIELD]: z.number().step(1).min(128_000).max(1_000_000).default(DEFAULT_CUSTOM_CONTEXT_WINDOW),
+  ...Object.fromEntries(Object.entries(CUSTOM_CONTEXT_MODEL_FIELDS).map(([modelKey, field]) => [field, z.number().step(1).min(128_000).max(CUSTOM_CONTEXT_MODEL_CAPS[modelKey]).default(CUSTOM_CONTEXT_MODEL_DEFAULTS[modelKey])])),
+}
+export const Config = z.object(Object.fromEntries(Object.entries(settingsFields).map(([key, field]) => [key, typeof field.volatile === 'function' ? field.volatile() : field])))
+
+export function apply(ctx, config = {}) {
+  const settings = createSettingsAdapter(ctx, z.object(settingsFields), config, SETTINGS_NAMESPACE)
   const searchProvider = createSearchProviderSwitcher(ctx.loader)
   const network = createCodexNetworkTransport()
   const originalImages = new OriginalImageStore()
@@ -123,22 +132,35 @@ export function apply(ctx) {
   })
   const baseProvider = openaiCodexProvider()
   let resolveAuth = async () => undefined
+  let subagentBackend
+  const runtimeManagement = createRuntimeManagement({
+    manager: () => ctx.get?.('pluginManager'), inspect: inspectSubagentRuntime,
+    active: () => subagentBackend?.activeCount() ?? 0,
+    selectDsh: async () => { if (subagentBackend) await subagentBackend.select('dsh'); else await settings.update({ subagentBackend: 'dsh' }) },
+  })
+  ctx.effect(() => ctx.on?.('plugin-manager/install-state', value => runtimeManagement.progress(value)))
   const modelCatalog = createOfficialModelCatalog({
     getAuth: options => resolveAuth(options),
     readCredential: options => store.read(PROVIDER, options),
     baseModels: () => baseProvider.getModels(),
     fetch: (input, init) => network.fetch('catalog', input, init),
   })
+  const connection = createSubscriptionConnection({ resolveMode: () => settings.get().connectionMode })
+  const compaction = createCompactionBridge({
+    enabled: () => settings.get().compactionMode === 'cloud',
+    accountScope: async () => {
+      await resolveAuth()
+      const credential = await store.read(PROVIDER)
+      return credential?.type === 'oauth' ? credential.accountId : undefined
+    },
+  })
+  ctx.effect(() => () => connection.dispose())
   const provider = openaiCodexSubscriptionProvider({
+    connection,
+    compaction,
     resolveSpeedMode: () => settings.get()[SPEED_MODE_FIELD],
     resolveOutputVerbosity: () => normalizeOutputVerbosity(settings.get()[OUTPUT_VERBOSITY_FIELD]),
     resolveContextMode: () => normalizeContextMode(settings.get()[CONTEXT_MODE_FIELD]),
-    resolveTransport: () => 'auto',
-    resolveSessionId: sessionId => {
-      const accountId = store.currentAccountId()
-      if (typeof sessionId !== 'string' || sessionId.length === 0 || typeof accountId !== 'string' || accountId.length === 0) return sessionId
-      return `${sessionId}:account:${accountId}`
-    },
     resolveCustomContextWindow: modelKey => {
       const overrides = readCapabilitySettings(settings.get())[CUSTOM_CONTEXT_OVERRIDES_FIELD]
       if (Object.hasOwn(overrides, modelKey)) return overrides[modelKey]
@@ -151,6 +173,11 @@ export function apply(ctx) {
   })
   const preferences = {
     status: () => ({
+      compactionMode: settings.get().compactionMode ?? 'dsh',
+      connectionMode: settings.get().connectionMode ?? 'sse',
+      subagentBackend: settings.get().subagentBackend ?? 'dsh',
+      subagentBackendAvailable: subagentBackend !== undefined,
+      subagentRuntimeInstalled: inspectSubagentRuntime().installed,
       ...readCapabilitySettings(settings.get()),
       [QUICK_QUOTA_MODE_FIELD]: normalizeQuickQuotaMode(
         settings.get()[QUICK_QUOTA_MODE_FIELD],
@@ -168,7 +195,15 @@ export function apply(ctx) {
       fastModels: provider.getModels().filter(model => modelCatalog.metadata(model.id)?.supportsFast ?? supportsCodexFastMode(model.id)).map(model => model.id),
       writable: ctx.settings.writable,
     }),
-    update: patch => settings.update(patch),
+    update: async patch => {
+      if (Object.hasOwn(patch, 'subagentBackend')) {
+        if (!subagentBackend) throw new Error('DSH subagent services are unavailable')
+        await subagentBackend.select(patch.subagentBackend)
+      }
+      const rest = { ...patch }
+      delete rest.subagentBackend
+      if (Object.keys(rest).length) await settings.update(rest)
+    },
   }
 
   const authModels = createModels({ credentials: store })
@@ -191,9 +226,8 @@ export function apply(ctx) {
     // pi-ai owns prompt_cache_key and encrypted reasoning replay. The explicit
     // profile values make the subscription cache contract auditable.
     cacheRetention: 'short',
-    // pi-ai's Codex route is WebSocket-first. Account-scoped session IDs above
-    // prevent its session cache from reusing a socket across different OAuth accounts.
-    transport: 'auto',
+    // The request-local connection policy upgrades this only when opted in.
+    transport: 'sse',
   })
   let profileKey
   let profileSnapshot
@@ -206,6 +240,43 @@ export function apply(ctx) {
     return profileSnapshot
   }
   resolveAuth = () => authModels.getAuth(PROVIDER)
+  ctx.inject(['subagents', 'subprocess', 'sandboxPolicy'], scoped => {
+    const instance = createSubscriptionSubagent({
+      ctx: scoped, nativeHome: dshHomePath('state', 'codex-subscription', 'native-subagent'),
+      resolveAuth, store,
+      refresh: credential => network.run('oauth', () => baseProvider.auth.oauth.refresh(credential)),
+      loadRuntime: loadSubagentRuntime,
+      maintenance: runtimeManagement.blocked,
+    })
+    scoped.subagents.registerProvider(instance.provider)
+    const switcher = createSubagentBackendSwitcher({
+      entries: () => scoped.loader.entries(), prepare: instance.prepare,
+      persist: mode => settings.update({ subagentBackend: mode }),
+    })
+    // Web presets mount their scoped tool rows lazily, after the settings page.
+    const unconfigure = scoped.on('internal/config', function(_config, next) {
+      return switcher.configure(this, next())
+    }, { global: true })
+    let requested = 'dsh'
+    const select = async mode => {
+      requested = mode
+      try { await switcher.select(mode) } catch (error) { requested = settings.get().subagentBackend ?? 'dsh'; throw error }
+    }
+    subagentBackend = { select, activeCount: instance.activeCount }
+    const sync = value => {
+      const mode = value.subagentBackend ?? 'dsh'
+      if (mode !== requested) void select(mode).catch(() => scoped.logger.warn('Could not switch the subscription subagent backend'))
+    }
+    void scoped.loader.await().then(() => sync(settings.get())).catch(() => scoped.logger.warn('Could not initialize the subscription subagent backend'))
+    const unwatch = settings.watch(sync)
+    scoped.effect(() => async () => {
+      unwatch()
+      unconfigure()
+      subagentBackend = undefined
+      instance.dispose()
+      await switcher.dispose()
+    }, 'codex-subscription: subagent backend')
+  })
   const adapterAuth = Object.freeze({
     credentials: store,
     authContext: Object.freeze({
@@ -239,10 +310,8 @@ export function apply(ctx) {
     auth: adapterAuth,
     resolveAttachments: () => ctx.get?.('attachments'),
   })
-  const registeredAdapter = scheduler === undefined
-    ? adapter
-    : new ScheduledCodexAdapter(adapter, scheduler, store)
-  ctx.llm.registerAdapter([PROVIDER], registeredAdapter)
+  const scheduledAdapter = scheduler === undefined ? adapter : new ScheduledCodexAdapter(adapter, scheduler, store)
+  ctx.llm.registerAdapter([PROVIDER], compaction.wrapAdapter(scheduledAdapter))
   const currentAgent = () => ctx.get?.('agents')?.currentInitiator?.()
   const codexSearch = createCodexSearchProvider({
     resolvePreferences: () => readCapabilitySettings(settings.get()),
@@ -355,8 +424,10 @@ export function apply(ctx) {
     accountUsageService,
     resetCreditService,
     preferences,
+    runtimeManagement,
     diagnosticsReader: () => createSubscriptionDiagnostics({ auth, preferences, login: coordinator.supportState(), network, modelCatalog }),
     modelCatalog,
+    closeConnections: () => connection.dispose(),
     originalImages,
     resolveInheritedOriginal: (sessionId, assetId) => inheritedOriginalImageRef(
       ctx.get?.('sessions')?.get?.(sessionId),

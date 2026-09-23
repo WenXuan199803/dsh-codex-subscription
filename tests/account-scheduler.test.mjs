@@ -99,21 +99,3 @@ test('scheduled adapter hides a pre-output failure and continues on the next acc
   for await (const _ of adapter.stream({ provider: 'openai-codex', model: 'gpt-test', messages: [], sessionId: 'session-1' })) {}
   assert.deepEqual(selected, ['b'], 'the session remains pinned to the replacement account')
 })
-
-
-test('scheduler can read round-robin policy from non-secret settings without touching vault policy writes', async () => {
-  let config = { strategy: 'fill-first', sessionAffinity: true }
-  const source = vault()
-  source.scheduler = async () => assert.fail('scheduler policy must come from normal settings')
-  const scheduler = new CodexAccountScheduler(source, { resolveConfig: () => config })
-
-  assert.equal((await scheduler.choose('s1')).id, 'a')
-  config = { strategy: 'round-robin', sessionAffinity: false }
-  scheduler.clearSession('s1')
-  assert.deepEqual([
-    (await scheduler.choose()).id,
-    (await scheduler.choose()).id,
-    (await scheduler.choose()).id,
-    (await scheduler.choose()).id,
-  ], ['a', 'b', 'c', 'a'])
-})

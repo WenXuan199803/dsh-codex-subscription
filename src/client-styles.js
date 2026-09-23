@@ -1,4 +1,13 @@
 export const STYLE = `
+.codexSubscriptionAdvancedPreferences{display:flex;flex-direction:column;gap:10px}
+.codexSubscriptionSearchChoices.codexSubscriptionQuotaModes{display:flex;flex:0 0 auto;gap:0;grid-template-columns:none}
+.codexSubscriptionSettingsDisclosure>summary{display:flex;align-items:center;gap:10px;min-height:28px;cursor:pointer;list-style:none;font-size:14px;font-weight:500}
+.codexSubscriptionSettingsDisclosure>summary::-webkit-details-marker{display:none}
+.codexSubscriptionSettingsDisclosure>summary>.codexSubscriptionPreferenceHint{margin-left:auto;font-weight:400}
+.codexSubscriptionSettingsDisclosure>summary>svg{flex:none;transition:transform .15s}
+.codexSubscriptionSettingsDisclosure[open]>summary>svg{transform:rotate(180deg)}
+.codexSubscriptionSettingsDisclosure>summary:focus-visible{outline:2px solid var(--dsw-alias-border-l3);outline-offset:4px;border-radius:4px}
+.codexSubscriptionSettingsDisclosureBody{padding-top:8px;margin-top:8px;border-top:1px solid var(--dsw-alias-border-l2)}
 .codexComposerQuota[data-warning=true]{color:var(--dsw-alias-state-error-primary)}
 .codexComposerQuota[data-warning=true] progress{accent-color:var(--dsw-alias-state-error-primary)}
 .codexComposerQuota[data-warning=true] progress::-webkit-progress-value{background:var(--dsw-alias-state-error-primary)}
@@ -51,20 +60,9 @@ export const STYLE = `
 .codexSubscriptionContextModelCopy span{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .codexSubscriptionContextInput{width:116px}
 .codexSubscriptionSearch{display:flex;flex-direction:column;gap:7px}
-.codexSubscriptionSearchChoices{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px}
-.codexSubscriptionSearchChoice{display:grid;grid-template-columns:14px minmax(0,1fr);align-items:center;column-gap:8px;min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);padding:9px 10px;text-align:left;cursor:pointer}
-.codexSubscriptionSearchChoice:has(input:disabled){cursor:not-allowed;opacity:.5}
-.codexSubscriptionSearchChoice:has(input:checked){border-color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2)}
-.codexSubscriptionSearchChoice:has(input:focus-visible){outline:2px solid var(--dsw-alias-border-l3);outline-offset:2px}
-.codexSubscriptionSearchInput{width:14px;height:14px;margin:0;accent-color:var(--dsw-alias-label-primary);cursor:inherit}
-.codexSubscriptionSearchCopy{display:block;min-width:0;pointer-events:none}
-.codexSubscriptionSearchCopy strong,.codexSubscriptionSearchCopy span{display:block}
-.codexSubscriptionSearchCopy strong{font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-secondary)}
-.codexSubscriptionSearchChoice:has(input:checked) strong{color:var(--dsw-alias-label-primary)}
-.codexSubscriptionSearchCopy span{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .codexSubscriptionDivider{height:1px;background:var(--dsw-alias-border-l2)}
 .codexSubscriptionQuotaModes[data-saving=true] .codexSubscriptionQuotaMode:has(input:disabled){cursor:wait;opacity:1}
-.codexSubscriptionSearchChoices[data-saving=true] .codexSubscriptionSearchChoice:has(input:disabled){cursor:wait;opacity:1}
+.codexSubscriptionSearchChoices[data-saving=true] .codexSubscriptionQuotaMode:has(input:disabled){cursor:wait;opacity:1}
 .codexSubscriptionAccountRow,.codexSubscriptionSectionHead{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .codexSubscriptionStatus{display:flex;align-items:center;gap:8px;font-size:14px;line-height:22px;font-weight:500}
 .codexSubscriptionAccounts{display:flex;flex-direction:column;border-top:1px solid var(--dsw-alias-border-l2)}
@@ -88,10 +86,6 @@ export const STYLE = `
 .codexSubscriptionDot[data-state=connected]{background:var(--dsw-alias-state-success-primary)}
 .codexSubscriptionDot[data-state=disconnected]{background:var(--dsw-alias-state-error-primary)}
 .codexSubscriptionActions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.codexSubscriptionTestState{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-module-platform);font-size:12px;line-height:18px}
-.codexSubscriptionTestState strong{font-size:13px;color:var(--dsw-alias-label-primary)}
-.codexSubscriptionTestState span{color:var(--dsw-alias-label-secondary)}
-.codexSubscriptionTestState small{flex-basis:100%;color:var(--dsw-alias-label-tertiary)}
 .codexSubscriptionFlow{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border-radius:10px;background:var(--dsw-alias-bg-module-platform)}
 .codexSubscriptionFlow p{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
 .codexSubscriptionCode{width:max-content;max-width:100%;font:600 16px/22px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.08em;overflow-wrap:anywhere}
@@ -230,5 +224,13 @@ export const STYLE = `
 @container (max-width:480px){.codexSubscriptionAccountRow,.codexSubscriptionSectionHead{align-items:flex-start;flex-direction:column}
 .codexSubscriptionActions{width:100%}
 .codexSubscriptionSearchChoices{grid-template-columns:1fr}}
+.codexSubscriptionRuntime{font-size:12px;line-height:1.6;margin-top:12px;color:var(--dsw-alias-label-secondary)}
+.codexSubscriptionRuntime summary{cursor:pointer;width:fit-content;color:var(--dsw-alias-label-primary);border-radius:6px}
+.codexSubscriptionRuntime summary:focus-visible{outline:2px solid currentColor;outline-offset:4px}
+.codexSubscriptionRuntime p{margin:8px 0}
+.codexSubscriptionRuntime .codexSubscriptionPreference{flex-wrap:wrap;align-items:flex-start}
+.codexSubscriptionRuntime .codexSubscriptionPreference>span{flex:1;min-width:180px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.codexSubscriptionRuntime button{flex-shrink:0;white-space:nowrap}
+.codexSubscriptionRuntime code{display:block;overflow-wrap:anywhere;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;user-select:text}
 @media(max-width:640px){.codexSubscriptionCard{padding:14px}}
 `

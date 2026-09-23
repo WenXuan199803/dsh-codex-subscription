@@ -39,6 +39,8 @@ export function createPreferenceController(scope, rpc) {
   let modelRefreshGeneration = 0
   let modelRefreshStarted = false
   let disposed = false
+  let subagentBackendAvailable = false
+  let subagentRuntimeInstalled = false
 
   const sameModels = (left, right) => left.length === right.length
     && left.every((model, index) => JSON.stringify(model) === JSON.stringify(right[index]))
@@ -56,6 +58,11 @@ export function createPreferenceController(scope, rpc) {
       // Keep accepted ready surfaces mounted while a Host write is pending.
       status: current.status,
       ...capabilities,
+      connectionMode: value?.connectionMode === 'websocket' ? 'websocket' : 'sse',
+      compactionMode: value?.compactionMode === 'cloud' ? 'cloud' : 'dsh',
+      subagentBackend: value?.subagentBackend === 'codex' ? 'codex' : 'dsh',
+      subagentBackendAvailable,
+      subagentRuntimeInstalled,
       quickQuotaMode: normalizeQuickQuotaMode(
         value?.[QUICK_QUOTA_MODE_FIELD],
         value?.[LEGACY_QUICK_QUOTA_FIELD],
@@ -92,6 +99,8 @@ export function createPreferenceController(scope, rpc) {
     publish()
   })
   const acceptFallback = value => {
+    subagentBackendAvailable = value?.subagentBackendAvailable === true
+    subagentRuntimeInstalled = value?.subagentRuntimeInstalled === true
     if (!modelRefreshStarted) {
       contextModels = Array.isArray(value?.contextModels) ? value.contextModels : []
       verbosityModels = Array.isArray(value?.verbosityModels) ? value.verbosityModels : []
@@ -102,6 +111,9 @@ export function createPreferenceController(scope, rpc) {
     fallback = {
       status: 'ready',
       value: {
+        connectionMode: value?.connectionMode === 'websocket' ? 'websocket' : 'sse',
+        compactionMode: value?.compactionMode === 'cloud' ? 'cloud' : 'dsh',
+        subagentBackend: value?.subagentBackend === 'codex' ? 'codex' : 'dsh',
         ...readCapabilitySettings(value),
         [QUICK_QUOTA_MODE_FIELD]: normalizeQuickQuotaMode(
           value?.[QUICK_QUOTA_MODE_FIELD],
@@ -128,6 +140,8 @@ export function createPreferenceController(scope, rpc) {
     try {
       const value = unwrap(await rpc.call(CHANNEL, 'preferences/status', {}))
       if (current !== generation || disposed) return
+      subagentBackendAvailable = value?.subagentBackendAvailable === true
+      subagentRuntimeInstalled = value?.subagentRuntimeInstalled === true
       if (nativeSnapshot().status === 'ready') {
         if (!modelRefreshStarted) {
           contextModels = Array.isArray(value?.contextModels) ? value.contextModels : []
@@ -189,7 +203,7 @@ export function createPreferenceController(scope, rpc) {
     publish()
     try {
       const native = nativeSnapshot()
-      if (native.status === 'ready') {
+      if (native.status === 'ready' && !Object.hasOwn(patch, 'subagentBackend')) {
         for (const [field, value] of entries) {
           if (current !== generation) return
           await scope.set(field, value)

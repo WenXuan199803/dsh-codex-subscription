@@ -5,12 +5,19 @@ import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 
 import { CODEX_MODELS_URL, createOfficialModelCatalog, parseOfficialModelCatalog } from '../src/model-catalog.js'
 import { openaiCodexProvider, openaiCodexSubscriptionProvider } from '../src/pi-ai-runtime.js'
+import { contextModelGroups } from '../src/settings-contract.js'
 
 const base = [{
   id: 'gpt-base', name: 'GPT Base', api: 'openai-codex-responses', provider: 'openai-codex',
   baseUrl: 'https://chatgpt.com/backend-api', reasoning: true, input: ['text'],
   cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 128_000,
 }]
+
+test('offline catalog does not resurrect retired Spark or prematurely remove GPT-5.5', () => {
+  const catalog = createOfficialModelCatalog()
+  const fallback = [{ id: 'gpt-5.3-codex-spark' }, { id: 'gpt-5.5' }, { id: 'gpt-5.6-luna' }]
+  assert.deepEqual(catalog.getModels(fallback).map(model => model.id), ['gpt-5.5', 'gpt-5.6-luna'])
+})
 
 const remote = (overrides = {}) => ({
   slug: 'gpt-next', display_name: 'GPT Next', description: 'Current account model',
@@ -19,6 +26,35 @@ const remote = (overrides = {}) => ({
   default_verbosity: 'medium', context_window: 400_000, input_modalities: ['text', 'image'],
   service_tiers: [{ id: 'priority', name: 'Fast', description: 'Priority' }],
   ...overrides,
+})
+
+test('unsupported catalog capabilities are diagnostic-only and follow catalog lifetime', async () => {
+  let unchanged = false
+  const catalog = createOfficialModelCatalog({
+    baseModels: () => base,
+    getAuth: async () => ({ auth: { apiKey: 'test-token' } }),
+    readCredential: async () => ({ type: 'oauth', accountId: 'test-account' }),
+    fetch: async () => unchanged ? new Response(null, { status: 304 }) : Response.json({ models: [remote({
+      supported_reasoning_levels: [{ effort: 'max' }, { effort: 'ultra' }, { effort: 'private text' }],
+      input_modalities: ['text', 'image', 'audio', null],
+      additional_speed_tiers: ['fast', 'burst', 'https://private.invalid'],
+    })] }, { headers: { etag: 'revision-one' } }),
+  })
+  await catalog.refresh()
+  const expected = [{ model: 'gpt-next', reasoning: ['ultra'], inputs: ['audio'], speeds: ['burst'] }]
+  assert.deepEqual(catalog.capabilityGaps(), expected)
+  const [model] = catalog.getModels([])
+  assert.deepEqual(model.input, ['text', 'image'])
+  assert.equal(model.thinkingLevelMap.ultra, undefined)
+  assert.equal(model.unsupported, undefined)
+  const copy = catalog.capabilityGaps()
+  copy[0].inputs.push('video')
+  assert.deepEqual(catalog.capabilityGaps(), expected)
+  unchanged = true
+  await catalog.refresh()
+  assert.deepEqual(catalog.capabilityGaps(), expected)
+  catalog.clear()
+  assert.deepEqual(catalog.capabilityGaps(), [])
 })
 
 test('official model catalog filters hidden entries and preserves advertised capabilities', () => {
@@ -44,6 +80,20 @@ test('ChatGPT catalog keeps picker-visible subscription models that are not API-
   })] })
   assert.equal(models.length, 1)
   assert.equal(models[0].id, 'gpt-5.3-codex-spark')
+})
+
+test('Reserve is a labeled last-choice experiment only when advertised by the account', () => {
+  const models = parseOfficialModelCatalog({ models: [
+    remote({ slug: 'gpt-reserve', visibility: 'hide', priority: 999, input_modalities: ['text'] }),
+    remote({ slug: 'other-hidden', visibility: 'hide' }),
+    remote(),
+  ] })
+  assert.deepEqual(models.map(model => model.id), ['gpt-next', 'gpt-reserve'])
+  assert.equal(models[1].name, 'GPT-Reserve (Experimental)')
+  assert.deepEqual(models[1].input, ['text'])
+  assert.equal(models[1].thinkingLevelMap.max, 'max')
+  assert.equal(parseOfficialModelCatalog({ models: [remote()] }).some(model => model.id === 'gpt-reserve'), false)
+  assert.equal(parseOfficialModelCatalog({ models: [remote({ slug: 'gpt-reserve', visibility: 'disabled' })] }).length, 0)
 })
 
 test('Astra from the official catalog reaches DSH with the selected context window', async () => {
@@ -94,6 +144,35 @@ test('Astra from the official catalog reaches DSH with the selected context wind
   assert.equal(await contextWindow(), 1_000_000, 'Extended follows the new explicit official catalog maximum')
 })
 
+test('new Codex models appear from the account catalog with supported reasoning and context', async () => {
+  const catalog = createOfficialModelCatalog({
+    baseModels: () => openaiCodexProvider().getModels(),
+    async getAuth() { return { auth: { apiKey: 'test-token' } } },
+    async readCredential() { return { type: 'oauth', accountId: 'test-account' } },
+    async fetch() {
+      return Response.json({ models: [
+        remote({ slug: 'gpt-6-sol', display_name: 'GPT-6-Sol', priority: 2,
+          context_window: 272_000, max_context_window: 872_000,
+          supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(effort => ({ effort })),
+        }),
+        remote({ slug: 'gpt-6-luna', display_name: 'GPT-6-Luna', priority: 3,
+          context_window: 272_000, max_context_window: 872_000,
+          supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max'].map(effort => ({ effort })),
+        }),
+      ] })
+    },
+  })
+  await catalog.refresh()
+  const provider = openaiCodexSubscriptionProvider({ catalog, resolveContextMode: () => 'extended' })
+  assert.deepEqual(provider.getModels().map(model => [model.id, model.contextWindow]), [
+    ['gpt-6-luna', 872_000], ['gpt-6-sol', 872_000],
+  ])
+  assert.deepEqual(contextModelGroups(catalog.getModels([])).map(row => row.key), ['gpt-6-luna', 'gpt-6-sol'])
+  assert.equal(catalog.metadata('gpt-6-luna').thinkingLevelMap.max, 'max')
+  assert.equal(catalog.metadata('gpt-6-sol').thinkingLevelMap.ultra, undefined)
+  assert.equal(catalog.metadata('gpt-6-sol').supportsFast, true)
+})
+
 test('catalog refresh is conditional, keeps the last good result, and never exposes credentials', async () => {
   const requests = []
   let mode = 'fresh'
@@ -139,7 +218,7 @@ test('catalog timeout rejects even when an injected request ignores abort and dr
   resolveFetch(Response.json({ models: [remote({ slug: 'late-model' })] }))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(catalog.revision(), 0)
-  assert.equal(catalog.getModels(base), base)
+  assert.deepEqual(catalog.getModels(base), base)
 })
 
 test('clear aborts the old flight without letting its timer invalidate the replacement', async () => {

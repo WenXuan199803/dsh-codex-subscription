@@ -20,17 +20,41 @@ function reasoningMap(levels) {
   return map
 }
 
+const capabilityNames = values => [...new Set(values.filter(value =>
+  typeof value === 'string' && /^[a-z][a-z0-9_-]{0,31}$/u.test(value)))].sort().slice(0, 16)
+
+function unsupportedCapabilities(value) {
+  const reasoning = capabilityNames((value.supported_reasoning_levels ?? []).map(item => item?.effort))
+    .filter(level => !['none', ...LEVELS.slice(1)].includes(level))
+  const inputs = capabilityNames(Array.isArray(value.input_modalities) ? value.input_modalities : [])
+    .filter(input => !['text', 'image'].includes(input))
+  const speeds = capabilityNames([
+    ...(Array.isArray(value.additional_speed_tiers) ? value.additional_speed_tiers : []),
+    ...(Array.isArray(value.service_tiers) ? value.service_tiers.map(tier => tier?.id) : []),
+  ]).filter(tier => !['auto', 'default', 'standard', 'fast', 'priority'].includes(tier))
+  return {
+    ...(reasoning.length ? { reasoning } : {}),
+    ...(inputs.length ? { inputs } : {}),
+    ...(speeds.length ? { speeds } : {}),
+  }
+}
+
 function visibleModel(value) {
   if (!record(value)) return undefined
   const id = nonEmpty(value.slug)
-  if (id === undefined || value.visibility !== 'list') return undefined
+  // Reserve is a manually selected experiment, only when the account catalog
+  // actually advertises it. Do not expose other hidden models or invent it offline.
+  const reserve = id === 'gpt-reserve' && ['list', 'hide'].includes(value.visibility)
+  if (id === undefined || (value.visibility !== 'list' && !reserve)) return undefined
   const supported = Array.isArray(value.supported_reasoning_levels) ? value.supported_reasoning_levels : []
   const input = Array.isArray(value.input_modalities)
     ? value.input_modalities.filter(item => ['text', 'image'].includes(item))
     : ['text', 'image']
+  const unsupported = unsupportedCapabilities({ ...value, supported_reasoning_levels: supported })
   return {
+    ...(Object.keys(unsupported).length ? { unsupported } : {}),
     id,
-    name: nonEmpty(value.display_name) ?? id,
+    name: reserve ? 'GPT-Reserve (Experimental)' : nonEmpty(value.display_name) ?? id,
     description: nonEmpty(value.description),
     priority: Number.isFinite(value.priority) ? value.priority : 0,
     input: input.length > 0 ? input : ['text'],
@@ -56,7 +80,8 @@ export function parseOfficialModelCatalog(value) {
   return value.models
     .map(visibleModel)
     .filter(model => model !== undefined && !seen.has(model.id) && seen.add(model.id))
-    .sort((left, right) => right.priority - left.priority)
+    .sort((left, right) => Number(left.id === 'gpt-reserve') - Number(right.id === 'gpt-reserve')
+      || right.priority - left.priority)
 }
 
 function mergeModel(baseModels, remote) {
@@ -172,16 +197,21 @@ export function createOfficialModelCatalog(options = {}) {
 
   return Object.freeze({
     refresh,
-    // Credential changes clear the catalog while a refresh is in flight. Do
-    // not let the first turn race that refresh and silently use Pi's legacy
-    // envelope. A failed lookup still retains the existing offline fallback.
+    // Account changes clear the catalog. Do not let the first model turn race
+    // the refresh and silently fall back to the legacy wire envelope.
     async ready() {
       if (models !== undefined) return
       try { await refresh() } catch { /* status() exposes the failed lookup */ }
     },
-    getModels: fallback => models ?? fallback,
+    // Spark's research preview retired on 2026-09-14. A bundled offline list
+    // must not resurrect it; a successful official catalog remains authoritative.
+    getModels: fallback => models ?? fallback.filter(model => model.id !== 'gpt-5.3-codex-spark'),
     metadata: modelId => metadata.get(modelId),
     revision: () => revision,
+    capabilityGaps: () => [...metadata.values()]
+      .filter(model => model.unsupported && /^[a-z][a-z0-9._-]{0,79}$/u.test(model.id))
+      .slice(0, 20)
+      .map(model => ({ model: model.id, ...structuredClone(model.unsupported) })),
     status: () => ({ source: models === undefined ? 'fallback' : 'online', refresh: refreshStatus }),
     clear() {
       generation += 1

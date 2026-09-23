@@ -1,4 +1,5 @@
 import { createSketchSessionRegistry } from './sketch-session-state.js'
+import { withComposerSession, openComposerSession, createSessionOpeners } from './client-session-compat.js'
 import { ComposerImagePreviews, MessageImagePreviews, IMAGE_PREVIEWS_CSS } from './client-image-previews.jsx'
 import { imageConversationNode } from './image-conversation-node.js'
 import { CodexImageToolRow, CodexImageOutput } from './client-images.jsx'
@@ -22,7 +23,7 @@ import { CodexModelSelect } from './client-model-select.jsx'
 import { CodexSection } from './client-section.jsx'
 
 export const inject = [
-  'slots', 'locale', 'connection', 'remote', 'settingsScope', 'modelDirectories', 'conversation', 'uiConversation', 'sessions',
+  'slots', 'locale', 'connection', 'remote', 'modelDirectories', 'conversation', 'uiConversation', 'sessions',
 ]
 
 export function apply(ctx) {
@@ -36,7 +37,10 @@ export function apply(ctx) {
     return () => tag.remove()
   }, 'codex-subscription: style')
   const rpc = createSubscriptionRpcClient(ctx.get('connection').rpc)
-  const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })
+  const scope = ctx.get('settingsScope')?.bind({ namespace: SETTINGS_NAMESPACE }) ?? {
+    getSnapshot: () => ({ status: 'unavailable' }),
+    subscribe: () => () => {},
+  }
   const preference = createPreferenceController(scope, rpc)
   ctx.effect(() => {
     let previous = JSON.stringify(preference.getSnapshot(), (key,value) => key.startsWith('image') || key === '' ? value : undefined)
@@ -98,9 +102,10 @@ export function apply(ctx) {
   else ctx.inject(['remote.session'], installDirectorySlots)
   const conversation = ctx.get('conversation')
   const uiConversation = ctx.get('uiConversation')
-  const sketchOpeners = new Map()
+  const sketchOpeners = createSessionOpeners()
   const sketchSessions = createSketchSessionRegistry()
-  ctx.effect(() => () => sketchSessions.dispose(), 'codex-subscription: sketch sessions')
+  const lifetime = new AbortController()
+  ctx.effect(() => () => { lifetime.abort(); imageViewer.close(); sketchOpeners.clear(); sketchSessions.dispose() }, 'codex-subscription: sketch sessions')
   ctx.inject(['inputTriggers'], triggerContext => triggerContext.effect(() => triggerContext.get('inputTriggers').registerSource(createSketchTrigger({
     enabled: () => { const value = preference.getSnapshot(); return value.imageSketchAgent && value.imageSketch && value.imageEditing },
     consume: (sessionId, span) => {
@@ -124,38 +129,43 @@ export function apply(ctx) {
   const openSketchImage = sessionId => async (src, name) => {
     const settings = preference.getSnapshot(), open = sketchOpeners.get(sessionId)
     if (!settings.imageSketch || !settings.imageEditing || !open) throw Error('Sketch unavailable')
-    const response = await fetch(src)
+    const response = await fetch(src, { signal: lifetime.signal })
     if (!response.ok) throw Error('Image unavailable')
     const blob = await response.blob()
     if (blob.size > 20 * 1024 * 1024) throw Error('Image too large')
+    lifetime.signal.throwIfAborted()
+    const liveOpen = sketchOpeners.get(sessionId)
+    if (!liveOpen || !preference.getSnapshot().imageSketch || !preference.getSnapshot().imageEditing) throw Error('Sketch unavailable')
     imageViewer.close()
-    open('sketch', document.activeElement, new File([blob], name || 'image.png', {type:blob.type || 'image/png'}))
+    liveOpen('sketch', document.activeElement, new File([blob], name || 'image.png', {type:blob.type || 'image/png'}))
   }
   const attachForEdit = sessionId => async (src, filename, draft, annotations = [], referenceName, sourceInDraft = false) => {
     if (!preference.getSnapshot().imageEditing) throw new Error('Image editing is disabled')
-    const actx = sessions.scope(sessionId)
-    if (actx === undefined || conversation.input?.for === undefined) {
-      throw new Error('This DSH version does not provide the image composer bridge')
-    }
-    const response = await fetch(src)
-    if (!response.ok) throw new Error('Could not read generated image')
-    const blob = await response.blob()
-    const files = sourceInDraft ? [] : [new File([blob], filename, { type: blob.type || 'image/png' })]
-    if (annotations.length > 0) {
-      const reference = await createAnnotatedImageReference(blob, annotations)
-      files.push(new File([reference], referenceName, { type: 'image/png' }))
-    }
-    const input = conversation.input.for(actx)
-    if (!preference.getSnapshot().imageEditing) throw new Error('Image editing is disabled')
-    if (files.length) attachImageFiles(conversation, input, files, sessionId)
-    sessions.open(sessionId)
-    // Preserve text typed while the asynchronous image preparation ran.
-    if (sourceInDraft && !annotations.length) return
-    if (!input.state.getSnapshot().draft.trim()) input.setDraft(draft)
-    else if (annotations.length) {
-      if (!input.state.getSnapshot().occurrences?.length) appendImagePrompt(input, draft)
-      else input.notify('info', draft)
-    }
+    return withComposerSession(sessions, sessionId, async actx => {
+      if (conversation.input?.for === undefined) {
+        throw new Error('This DSH version does not provide the image composer bridge')
+      }
+      const response = await fetch(src, { signal: lifetime.signal })
+      if (!response.ok) throw new Error('Could not read generated image')
+      const blob = await response.blob()
+      const files = sourceInDraft ? [] : [new File([blob], filename, { type: blob.type || 'image/png' })]
+      if (annotations.length > 0) {
+        const reference = await createAnnotatedImageReference(blob, annotations)
+        files.push(new File([reference], referenceName, { type: 'image/png' }))
+      }
+      lifetime.signal.throwIfAborted()
+      const input = conversation.input.for(actx)
+      if (!preference.getSnapshot().imageEditing) throw new Error('Image editing is disabled')
+      if (files.length) attachImageFiles(conversation, input, files, sessionId)
+      openComposerSession(sessions, ctx.get('uiWorkspace'), sessionId)
+      // Preserve text typed while the asynchronous image preparation ran.
+      if (sourceInDraft && !annotations.length) return
+      if (!input.state.getSnapshot().draft.trim()) input.setDraft(draft)
+      else if (annotations.length) {
+        if (!input.state.getSnapshot().occurrences?.length) appendImagePrompt(input, draft)
+        else input.notify('info', draft)
+      }
+    })
   }
   const nativeAttachments = () => ctx.slots.entries('conversation.input.attachments').find(entry =>
     entry.component !== ComposerImagePreviews && entry.locale === 'conversation' &&
@@ -185,7 +195,7 @@ export function apply(ctx) {
     name: 'conversation.input.left', id: 'codex-image-workspace', order: 30,
     inject: sessionId => ({
       preference, t, sessionId, rpc, sessionState: sketchSessions.get(sessionId),
-      registerOpen: callback => { sketchOpeners.set(sessionId, callback); return () => { if (sketchOpeners.get(sessionId) === callback) sketchOpeners.delete(sessionId) } },
+      registerOpen: callback => sketchOpeners.register(sessionId, callback),
       attachSketch: blob => {
         const current = preference.getSnapshot()
         if (!current.imageSketch || !current.imageEditing) throw new Error('Sketch editing is disabled')

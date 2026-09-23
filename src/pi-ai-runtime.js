@@ -2,8 +2,9 @@
 // The exact peer version makes a DSH update fail visibly until this seam is
 // re-audited instead of silently changing authentication or cache semantics.
 import { openaiCodexProvider as createOpenAICodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
-import { officialCodexRequest } from './codex-request.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { officialCodexRequest } from './codex-request.js'
+import { normalizeTransportEvent } from './transport-failure.js'
 import {
   CONTEXT_MODE_CUSTOM,
   CONTEXT_MODE_EXTENDED,
@@ -37,9 +38,9 @@ export function openaiCodexSubscriptionProvider({
   resolveOutputVerbosity = () => OUTPUT_VERBOSITY_DEFAULT,
   resolveContextMode = () => undefined,
   resolveCustomContextWindow = () => undefined,
-  resolveTransport = () => undefined,
-  resolveSessionId = sessionId => sessionId,
   catalog,
+  connection,
+  compaction,
   runNetwork = (_area, operation) => operation(),
 } = {}) {
   const provider = createOpenAICodexProvider()
@@ -51,9 +52,6 @@ export function openaiCodexSubscriptionProvider({
       return { auth: { apiKey: token }, source: 'DSH-managed OAuth request' }
     },
   })
-  const providerEnv = Object.freeze(Object.fromEntries(
-    Object.entries(process.env).filter(([, value]) => typeof value === 'string'),
-  ))
   const modelMetadata = model => catalog?.metadata(model?.id)
   const supportsVerbosity = model => modelMetadata(model)?.supportVerbosity ?? model?.id !== 'gpt-5.3-codex-spark'
   const withPreferences = (model, options = {}) => {
@@ -67,13 +65,8 @@ export function openaiCodexSubscriptionProvider({
     const fast = resolveSpeedMode() === SPEED_MODE_FAST
       && (metadata?.supportsFast ?? supportsCodexFastMode(model?.id))
     const onPayload = options.onPayload
-    const transport = resolveTransport()
-    const sessionId = resolveSessionId(options.sessionId)
     return {
       ...options,
-      env: options.env ?? providerEnv,
-      ...(transport === undefined ? {} : { transport }),
-      ...(sessionId === undefined ? {} : { sessionId }),
       ...(textVerbosity === undefined ? {} : { textVerbosity }),
       ...(fast ? { serviceTier: FAST_SERVICE_TIER } : {}),
       ...(metadata?.useResponsesLite === true ? {
@@ -85,12 +78,14 @@ export function openaiCodexSubscriptionProvider({
           ...(textVerbosity === undefined ? {} : { text: { ...(payload.text ?? {}), verbosity: textVerbosity } }),
           ...(fast ? { service_tier: FAST_SERVICE_TIER } : {}),
         }
-        const next = await onPayload?.(preferred, requestModel)
-        return officialCodexRequest({
-          ...(next ?? preferred),
-          ...(textVerbosity === undefined ? {} : { text: { ...((next ?? preferred).text ?? {}), verbosity: textVerbosity } }),
+        const managed = compaction?.preparePayload(preferred, model?.contextWindow) ?? preferred
+        const next = await onPayload?.(managed, requestModel)
+        const requested = {
+          ...(next ?? managed),
+          ...(textVerbosity === undefined ? {} : { text: { ...((next ?? managed).text ?? {}), verbosity: textVerbosity } }),
           ...(fast ? { service_tier: FAST_SERVICE_TIER } : {}),
-        }, metadata)
+        }
+        return officialCodexRequest(requested, metadata)
       },
     }
   }
@@ -106,48 +101,58 @@ export function openaiCodexSubscriptionProvider({
     const requested = clampModelContext(resolveCustomContextWindow(customContextModelKey(model.id)), maximum, model.contextWindow)
     return { ...model, contextWindow: requested }
   })
-  const networkIterable = factory => {
-    let ready, running, finish
+  const networkIterable = (factory, optionsFactory) => {
+    let iterator
+    let ready
+    let running
+    let finish
     const start = () => {
       if (ready) return ready
       ready = new Promise((resolve, reject) => {
-        running = Promise.resolve().then(() => runNetwork('model', async () => {
-          const completed = new Promise(done => { finish = done })
-          const iterator = (await factory())[Symbol.asyncIterator]()
-          const scoped = AsyncLocalStorage.snapshot()
-          resolve({ iterator, scoped })
-          await completed
-        })).catch(reject)
+        Promise.resolve().then(async () => {
+          await catalog?.ready?.()
+          const options = typeof optionsFactory === 'function' ? optionsFactory() : optionsFactory
+          const request = await (connection?.prepare(options) ?? Promise.resolve({ options }))
+          running = Promise.resolve().then(() => runNetwork('model', async () => {
+            const completed = new Promise(done => { finish = done })
+            iterator = factory(compaction?.requestOptions(request.options) ?? request.options)[Symbol.asyncIterator]()
+            const scoped = AsyncLocalStorage.snapshot()
+            resolve({ request, scoped })
+            await completed
+          }, compaction?.networkOptions(request.network) ?? request.network)).catch(reject)
+        }).catch(reject)
       })
       return ready
     }
-    const invoke = async (method, value) => {
-      const { iterator, scoped } = await start()
+    const step = async (method, value) => {
+      const { request, scoped } = await start()
       try {
-        const result = await scoped(() => iterator[method]?.(value) ?? { done: true, value })
-        if (result.done || method === 'return') { finish(); await running }
-        return result
-      } catch (error) { finish(); await running; throw error }
+        const result = await scoped(() => iterator[method]?.(value)
+          ?? (method === 'throw' ? Promise.reject(value) : Promise.resolve({ done: true, value })))
+        if (result.done || method === 'return') {
+          finish?.()
+          await running
+        }
+        return result.done ? result : { ...result, value: normalizeTransportEvent(result.value, request.options?.signal) }
+      } catch (error) {
+        finish?.()
+        await running?.catch(() => {})
+        throw error
+      }
     }
     return {
       [Symbol.asyncIterator]() { return this },
-      next: value => invoke('next', value),
-      return: value => invoke('return', value),
-      throw: error => invoke('throw', error),
+      next: value => step('next', value),
+      return: value => ready || iterator ? step('return', value) : Promise.resolve({ done: true, value }),
+      throw: error => ready || iterator ? step('throw', error) : Promise.reject(error),
     }
   }
   return Object.freeze({
     ...provider,
     auth: Object.freeze({ ...provider.auth, apiKey: requestToken }),
     getModels,
-    stream: (model, context, options) => networkIterable(async () => {
-      await catalog?.ready?.()
-      return provider.stream(model, context, withPreferences(model, options))
-    }),
-    streamSimple: (model, context, options) => networkIterable(async () => {
-      await catalog?.ready?.()
-      return provider.streamSimple(model, context, withPreferences(model, options))
-    }),
+    stream: (model, context, options) => networkIterable(prepared => provider.stream(model, context, prepared), () => withPreferences(model, options)),
+    streamSimple: (model, context, options) => networkIterable(prepared => provider.streamSimple(model, context, prepared), () => withPreferences(model, options)),
   })
 }
 

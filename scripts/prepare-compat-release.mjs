@@ -114,12 +114,12 @@ export function planCompatibilityUpdate(state, candidate) {
   manifest.version = preview ? nextBetaVersion(previousPluginVersion) : nextStableVersion(previousPluginVersion)
   if (!preview) {
     for (const name of Object.keys(manifest.devDependencies ?? {})) {
-      if (name.startsWith('@deepseek-ai/dsh-')) manifest.devDependencies[name] = candidate
+      if (name.startsWith('@deepseek-ai/dsh-') && !manifest.peerDependenciesMeta?.[name]?.optional) manifest.devDependencies[name] = candidate
     }
   }
   const supportedRange = [...compatibility.supported, ...compatibility.previews].sort(compareVersions).join(' || ')
   for (const name of Object.keys(manifest.peerDependencies ?? {})) {
-    if (name.startsWith('@deepseek-ai/dsh-')) manifest.peerDependencies[name] = supportedRange
+    if (name.startsWith('@deepseek-ai/dsh-') && !manifest.peerDependenciesMeta?.[name]?.optional) manifest.peerDependencies[name] = supportedRange
   }
 
   return {
@@ -135,6 +135,22 @@ export function planCompatibilityUpdate(state, candidate) {
 }
 
 export function rewriteBoundedVersions(source, update, label) {
+  if (label === 'dsh-codex.ps1') {
+    // The optional manager is stamped independently of README/package history.
+    const assignment = /^(\$PackageVersion\s*=\s*')([^'\r\n]+)('\s*)$/gmu
+    const matches = [...source.matchAll(assignment)]
+    if (matches.length !== 1) throw new Error('expected one PackageVersion assignment in dsh-codex.ps1')
+    parseVersion(matches[0][2])
+    parseVersion(update.pluginVersion)
+    const specAssignment = /^(\$PackageSpec[ \t]*=[ \t]*')([^'\r\n]+)('[ \t]*\r?)$/gmu
+    const specs = [...source.matchAll(specAssignment)]
+    if (specs.length !== 1 || specs[0][2] !== `dsh-codex-subscription@${matches[0][2]}`) {
+      throw new Error('expected one matching PackageSpec assignment in dsh-codex.ps1')
+    }
+    return source
+      .replace(assignment, (_match, prefix, _version, suffix) => prefix + update.pluginVersion + suffix)
+      .replace(specAssignment, (_match, prefix, _spec, suffix) => prefix + `dsh-codex-subscription@${update.pluginVersion}` + suffix)
+  }
   const previousVersion = update.previousDocumentedPluginVersion ?? update.previousPluginVersion
   let rewritten = source.replaceAll(previousVersion, update.pluginVersion)
   if (update.updateStableReferences) rewritten = rewritten.replaceAll(update.previousDshVersion, update.dshVersion)

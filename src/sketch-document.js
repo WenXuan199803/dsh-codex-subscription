@@ -1,3 +1,5 @@
+import { configureSketchBrush } from './sketch-brushes.js'
+import { layoutSketchText } from './sketch-text.js'
 export const SKETCH_SIZE = 1024
 export const MAX_SKETCH_STROKES = 2000
 export const MAX_STROKE_POINTS = 2000
@@ -18,17 +20,13 @@ export function paintSketch(context, strokes, size = SKETCH_SIZE, transparent = 
     const first = stroke.points[0]
     if (!first) continue
     context.globalCompositeOperation = stroke.shape === 'eraser' ? 'destination-out' : 'source-over'
-    context.globalAlpha = (stroke.opacity ?? 1) * (stroke.brush === 'marker' ? 0.28 : stroke.brush === 'pencil' ? 0.65 : 1)
-    context.strokeStyle = stroke.color
-    context.fillStyle = stroke.color
-    context.lineWidth = stroke.width * (stroke.brush === 'pencil' ? 0.55 : 1) * (stroke.pressure ?? 1)
+    configureSketchBrush(context,stroke)
     context.beginPath()
     const last = stroke.points.at(-1)
     if (stroke.shape === 'text') {
-      const x=Math.min(first.x,last.x)*size,y=Math.min(first.y,last.y)*height,w=Math.abs(last.x-first.x)*size,h=Math.abs(last.y-first.y)*height
-      const lines=stroke.text.split('\n'),fontSize=Math.min(stroke.width,h/Math.max(1,lines.length)/1.2)
+      const {x,y,lines,size:fontSize}=layoutSketchText(stroke,context,size,height)
       context.font=`${fontSize}px system-ui, sans-serif`;context.textBaseline='top'
-      lines.forEach((line,i)=>context.fillText(line,x,y+i*fontSize*1.2,w))
+      lines.forEach((line,i)=>context.fillText(line,x,y+i*fontSize*1.2))
     } else if (stroke.shape === 'arrow') {
       const x=last.x*size,y=last.y*height,a=Math.atan2(y-first.y*height,x-first.x*size),head=Math.min(Math.hypot(x-first.x*size,y-first.y*height)*.4,Math.max(12,stroke.width*3))
       context.moveTo(first.x*size,first.y*height);context.lineTo(x,y);context.stroke();context.beginPath();context.moveTo(x,y)
@@ -51,7 +49,8 @@ export function paintSketch(context, strokes, size = SKETCH_SIZE, transparent = 
       context.closePath()
       if(stroke.fill)context.fill();else context.stroke()
     } else if (stroke.points.length === 1) {
-      context.arc(first.x * size, first.y * height, context.lineWidth / 2, 0, Math.PI * 2)
+      if(stroke.brushVersion===2 && stroke.brush==='marker')context.rect(first.x*size-context.lineWidth/2,first.y*height-context.lineWidth/4,context.lineWidth,context.lineWidth/2)
+      else context.arc(first.x * size, first.y * height, context.lineWidth / 2, 0, Math.PI * 2)
       context.fill()
     } else {
       context.moveTo(first.x * size, first.y * height)

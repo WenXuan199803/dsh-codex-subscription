@@ -11,6 +11,7 @@ on:
       - 'compatibility.json'
       - 'pnpm-lock.yaml'
       - 'tsdown.config.mjs'
+      - 'cordis.patch.yml'
 
 permissions:
   contents: write
@@ -24,25 +25,25 @@ jobs:
           fetch-depth: 0
       - uses: pnpm/action-setup@v5
         with:
-          version: 11.19.0
+          version: 11.26.0
           run_install: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm install --no-frozen-lockfile --ignore-scripts
       - run: pnpm run test:behavior
-      - run: pnpm run test:delivery
       - run: pnpm run build
+      - run: pnpm run test:delivery
       - name: Commit generated runtime
         run: |
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add README.md tests/client-contract.test.mjs tests/release-contract.test.mjs lib
+          git add pnpm-lock.yaml lib
           if git diff --cached --quiet; then
             echo 'Nothing to commit'
             exit 0
           fi
-          git commit -m 'build: materialize Codex account pool runtime'
+          git commit -m 'build: materialize clean ShangShuSheng Codex runtime'
           git push origin HEAD:main

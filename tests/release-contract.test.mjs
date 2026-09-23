@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
+import { compareVersions } from '../scripts/prepare-compat-release.mjs'
 
 const text = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 const pngDimensions = path => {
@@ -10,6 +11,15 @@ const pngDimensions = path => {
 }
 const manifest = JSON.parse(text('package.json'))
 const compatibility = JSON.parse(text('compatibility.json'))
+
+test('normal installation does not pull the optional Codex executable runtime', () => {
+  const runtime = '@deepseek-ai/dsh-subagent-codex'
+  assert.equal(manifest.dependencies?.[runtime], undefined)
+  assert.equal(manifest.optionalDependencies?.[runtime], undefined)
+  assert.equal(manifest.peerDependenciesMeta?.[runtime]?.optional, true)
+  assert.equal(manifest.peerDependencies[runtime], '0.1.5-rc.2 || 0.1.5-rc.3')
+  assert.equal(manifest.devDependencies[runtime], '0.1.5-rc.2')
+})
 
 test('scheduled compatibility checks cannot commit or release merely because upstream changed', () => {
   const workflow = text('.github/workflows/upstream-compatibility.yml')
@@ -56,7 +66,7 @@ test('release is a prebuilt, documented, removable DSH bundle', () => {
   assert.equal(pkg.dependencies?.['@earendil-works/pi-ai'], undefined)
   const supportedDshReleases = new Set([...compatibility.supported, ...compatibility.previews])
   for (const [name, version] of Object.entries(pkg.peerDependencies)) {
-    if (name.startsWith('@deepseek-ai/dsh-')) assert.deepEqual(new Set(version.split(' || ')), supportedDshReleases, name)
+    if (name.startsWith('@deepseek-ai/dsh-') && !pkg.peerDependenciesMeta?.[name]?.optional) assert.deepEqual(new Set(version.split(' || ')), supportedDshReleases, name)
   }
   assert.equal(pkg.devDependencies['@deepseek-ai/dsh-llm-pi-ai'], compatibility.latestTested)
   assert.equal(pkg.devDependencies['@deepseek-ai/dsh-api-remotes'], compatibility.latestTested)
@@ -70,7 +80,7 @@ test('release is a prebuilt, documented, removable DSH bundle', () => {
   assert.equal(pkg.devDependencies['@deepseek-ai/schemastery'], '3.18.2')
   assert.equal(pkg.peerDependencies['@deepseek-ai/schemastery'], '3.18.1 || ^3.18.2')
   assert.equal(pkg.peerDependencies['@earendil-works/pi-ai'], '0.82.1 || 0.85.1')
-  assert.equal(pkg.packageManager, 'pnpm@11.19.0')
+  assert.equal(pkg.packageManager, 'pnpm@11.26.0')
   assert.equal(existsSync(new URL('../lib/index.js', import.meta.url)), true)
   assert.equal(existsSync(new URL('../lib/client.js', import.meta.url)), true)
   assert.equal(existsSync(new URL('../lib/boundary.js', import.meta.url)), false)
@@ -84,15 +94,17 @@ test('release is a prebuilt, documented, removable DSH bundle', () => {
 test('settings registration works across stable and preview DSH exports', () => {
   const source = text('src/index.js')
   assert.doesNotMatch(source, /import\s*\{[^}]*settingsNamespace[^}]*\}\s*from\s*['"]@deepseek-ai\/dsh-settings['"]/u)
-  assert.match(source, /ctx\.settings\.register\(SETTINGS_NAMESPACE,/u)
+  assert.match(source, /createSettingsAdapter\(ctx, z\.object\(settingsFields\), config, SETTINGS_NAMESPACE\)/u)
 })
 
 test('compatibility metadata keeps stable and preview DSH lanes explicit', () => {
-  assert.equal(compatibility.latestTested, '0.1.5-rc.1')
-  assert.deepEqual(compatibility.supported, ['0.1.2-rc.1', '0.1.5-rc.1', '0.1.5-rc.2'])
-  assert.deepEqual(compatibility.previews, ['0.1.5-alpha.1', '0.1.5-alpha.2'])
+  assert.ok(compatibility.supported.includes('0.1.2-rc.1'))
+  assert.equal(compatibility.latestTested, [...compatibility.supported].sort(compareVersions).at(-1))
+  assert.equal(new Set(compatibility.supported).size, compatibility.supported.length)
+  assert.ok(compatibility.supported.every(version => /^\d+\.\d+\.\d+(?:-rc\.\d+)?$/u.test(version)))
+  assert.ok(compatibility.previews.every(version => !compatibility.supported.includes(version)))
   assert.equal(new Set(compatibility.previews).size, compatibility.previews.length)
-  assert.ok(compatibility.previews.every(version => /^\d+\.\d+\.\d+-[0-9A-Za-z.-]+$/u.test(version)))
+  assert.ok(compatibility.previews.every(version => /^\d+\.\d+\.\d+-(?:alpha|beta)\.\d+$/u.test(version)))
 })
 
 test('public docs contain only user-facing product and operation information', () => {
@@ -121,21 +133,21 @@ test('GitHub defaults to Chinese and links a complete English README', () => {
     assert.doesNotMatch(doc, /img\.shields\.io\/npm\/d(?:m|w|y)\/dsh-codex-subscription/u)
     assert.match(doc, /npmjs\.com\/package\/dsh-codex-subscription/u)
   }
-  assert.match(readmeZh, /## 准备 DSH[\s\S]*DSH-Portable[\s\S]*Windows、macOS 和 Linux[\s\S]*社区便携桌面分发[\s\S]*github\.com\/deepseek-ai\/deepseek-harness#run[\s\S]*## 安装[\s\S]*### DSH 标准命令/u)
-  assert.match(readme, /## Prepare DSH[\s\S]*DSH-Portable[\s\S]*community portable desktop distribution for Windows, macOS, and Linux[\s\S]*github\.com\/deepseek-ai\/deepseek-harness#run[\s\S]*## Install[\s\S]*### Standard DSH command/u)
+  assert.match(readmeZh, /## 准备 DSH[\s\S]*DSH-Portable[\s\S]*Windows、macOS 和 Linux[\s\S]*社区便携桌面分发[\s\S]*github\.com\/deepseek-ai\/deepseek-harness#run[\s\S]*## 安装[\s\S]*### 在插件页面安装/u)
+  assert.match(readme, /## Prepare DSH[\s\S]*DSH-Portable[\s\S]*community portable desktop distribution for Windows, macOS, and Linux[\s\S]*github\.com\/deepseek-ai\/deepseek-harness#run[\s\S]*## Install[\s\S]*### Install from the Plugins page/u)
   assert.doesNotMatch(`${readme}\n${readmeZh}`, /社区便携包|community DSH-Portable package/iu)
   assert.match(readmeZh, /本项目的问题反馈[\s\S]*github\.com\/WSL043\/dsh-codex-subscription\/issues[\s\S]*github\.com\/deepseek-ai\/deepseek-harness\/discussions/u)
   assert.match(readme, /project feedback[\s\S]*github\.com\/deepseek-ai\/deepseek-harness\/discussions/u)
   assert.doesNotMatch(`${readme}\n${readmeZh}`, /依次粘贴下面两行|paste these two lines in order|下面三行|three lines/iu)
   assert.doesNotMatch(`${readme}\n${readmeZh}`, /\birm\b|dsh-codex-setup\.ps1/iu)
   assert.doesNotMatch(readmeZh, /安装提示词|更新提示词|卸载提示词/u)
-  assert.match(readmeZh, /https:\/\/raw\.githubusercontent\.com\/WSL043\/dsh-codex-subscription\/main\/docs\/assets\/context-settings\.png/u)
-  assert.match(readme, /https:\/\/raw\.githubusercontent\.com\/WSL043\/dsh-codex-subscription\/main\/docs\/assets\/context-settings\.png/u)
-  assert.match(readme, /Screenshots use the Chinese UI/u)
-  assert.match(readmeZh, /raw\.githubusercontent\.com\/WSL043\/dsh-codex-subscription\/main\/docs\/assets\/composer-quota\.png/u)
+  assert.match(readmeZh, /docs\/assets\/subscription-account\.png/u)
+  assert.match(readme, /docs\/assets\/subscription-account-en\.png/u)
+  assert.match(readme, /actual Account & preferences screen/u)
+  assert.match(readmeZh, /docs\/assets\/composer-quota\.png/u)
   assert.doesNotMatch(readmeZh, /docs\/assets\/composer-quota-en\.png/u)
   for (const doc of [readme, readmeZh]) {
-    for (const match of doc.matchAll(/raw\.githubusercontent\.com\/WSL043\/dsh-codex-subscription\/main\/docs\/assets\/([^\s)]+\.png)/gu)) {
+    for (const match of doc.matchAll(/docs\/assets\/([^\s)]+\.png)/gu)) {
       const asset = match[1]
       assert.equal(existsSync(new URL(`../docs/assets/${asset}`, import.meta.url)), true, `documented release image must exist: ${asset}`)
       assert.doesNotMatch(doc, /releases\/latest\/download\/[^\s)]+\.png/u)
@@ -168,10 +180,10 @@ test('plugin-owned marketplace screenshots stay valid and show both product lang
     assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), true, `marketplace screenshot must exist: ${path}`)
   }
   for (const path of [
-    'docs/assets/context-settings-en.png',
-    'docs/assets/image-preview-annotations-en.png',
-    'docs/assets/context-settings.png',
-    'docs/assets/image-preview-annotations.png',
+    'docs/assets/settings-advanced-current-en.png',
+    'docs/assets/codex-subscription-overview-en.webp',
+    'docs/assets/settings-advanced-current.png',
+    'docs/assets/codex-subscription-overview.webp',
   ]) assert.equal(screenshots.includes(path), true, `marketplace must show ${path}`)
 })
 
@@ -187,14 +199,13 @@ test('each complete README stays in one language and links to the complete trans
 test('public readmes provide explicit update commands and verification', () => {
   const readmeEn = text('README.en.md')
   const readmeZh = text('README.md')
-  assert.match(readmeZh, /## 更新与卸载[\s\S]*### 更新并检查[\s\S]*dsh plugin --profile web update dsh-codex-subscription[\s\S]*dsh plugin --profile web list[\s\S]*dsh --profile web --dump-config[\s\S]*### 卸载[\s\S]*dsh plugin --profile web remove dsh-codex-subscription/u)
-  assert.match(readmeEn, /## Update and uninstall[\s\S]*### Update and verify[\s\S]*dsh plugin --profile web update dsh-codex-subscription[\s\S]*dsh plugin --profile web list[\s\S]*dsh --profile web --dump-config[\s\S]*### Uninstall[\s\S]*dsh plugin --profile web remove dsh-codex-subscription/u)
+  assert.match(readmeZh, /## 更新与卸载[\s\S]*插件[\s\S]*dsh plugin --profile web update dsh-codex-subscription[\s\S]*dsh plugin --profile web remove dsh-codex-subscription/u)
+  assert.match(readmeEn, /## Update and uninstall[\s\S]*Plugins[\s\S]*dsh plugin --profile web update dsh-codex-subscription[\s\S]*dsh plugin --profile web remove dsh-codex-subscription/u)
   assert.match(readmeZh, /dsh plugin --profile web add dsh-codex-subscription/u)
   assert.match(readmeEn, /dsh plugin --profile web add dsh-codex-subscription/u)
   for (const readme of [readmeZh, readmeEn]) {
-    assert.equal(readme.includes(`npx -y @deepseek-ai/dsh@${compatibility.latestTested} plugin --profile web add dsh-codex-subscription`), true)
-    assert.equal(readme.includes(`npx -y @deepseek-ai/dsh@${compatibility.latestTested} plugin --profile web list dsh-codex-subscription --depth 0`), true)
-    assert.equal(readme.includes(`npx -y @deepseek-ai/dsh@${compatibility.latestTested} --profile web --dump-config`), true)
+    assert.match(readme, /```text\s+dsh-codex-subscription\s+```/u)
+    assert.doesNotMatch(readme, /npx -y @deepseek-ai/u)
   }
   assert.doesNotMatch(readmeZh, /^## \d+\.\d+\.\d+ 重点变化$/mu)
   assert.doesNotMatch(readmeEn, /^## What's included in \d+\.\d+\.\d+$/mu)

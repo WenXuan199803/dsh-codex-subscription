@@ -2,6 +2,8 @@ import { defineConfig } from 'tsdown'
 
 const id = 'dsh-codex-subscription-sssv4'
 const hostExternal = [
+  '@deepseek-ai/dsh-subagent-codex',
+  '@deepseek-ai/dsh-sdk-protocol',
   '@deepseek-ai/dsh-client-connection',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-credentials',
@@ -13,7 +15,6 @@ const hostExternal = [
   '@earendil-works/pi-ai',
   '@earendil-works/pi-ai/api/openai-codex-responses',
   '@earendil-works/pi-ai/providers/openai-codex',
-  'ws',
 ]
 const clientExternal = [
   'react', 'react/jsx-runtime', 'react-dom', '@deepseek-ai/cordis',

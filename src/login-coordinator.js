@@ -323,7 +323,7 @@ export class CodexLoginCoordinator {
       throw new Error('Unsupported Codex scheduling strategy')
     }
     if (patch.sessionAffinity !== undefined && typeof patch.sessionAffinity !== 'boolean') {
-      throw new Error('Invalid Codex session affinity setting')
+      throw new Error('Invalid Codex scheduler affinity')
     }
     await this.updateSchedulerConfig(patch)
     return this.schedulerStatus()

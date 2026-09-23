@@ -1,8 +1,7 @@
 import { execFile } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { request as httpsRequest } from 'node:https'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { Readable } from 'node:stream'
+import { PassThrough, Readable } from 'node:stream'
 import { promisify } from 'node:util'
 
 import { HttpsProxyAgent } from 'https-proxy-agent'
@@ -12,10 +11,6 @@ const execFileAsync = promisify(execFile)
 const CODEX_AUTH_HOST = 'auth.openai.com'
 const CODEX_SUBSCRIPTION_HOST = 'chatgpt.com'
 const CODEX_HOSTS = new Set([CODEX_AUTH_HOST, CODEX_SUBSCRIPTION_HOST])
-const CODEX_ORIGINATOR = 'codex_cli_rs'
-const CODEX_COMPAT_VERSION = '0.155.1'
-const CODEX_USER_AGENT = `${CODEX_ORIGINATOR}/${CODEX_COMPAT_VERSION}`
-const CODEX_INSTALLATION_ID = randomUUID()
 
 const networkScope = new AsyncLocalStorage()
 let activeScopes = 0
@@ -24,47 +19,6 @@ let scopedFetch
 let baseWebSocket
 let scopedWebSocket
 let activeWebSocketScopes = 0
-
-function headerRecord(headers) {
-  if (headers === undefined || headers === null) return {}
-  if (headers instanceof Headers) return Object.fromEntries(headers.entries())
-  return { ...headers }
-}
-
-function officialCodexHeaders(headers) {
-  const next = headerRecord(headers)
-  next.originator = CODEX_ORIGINATOR
-  next['User-Agent'] = CODEX_USER_AGENT
-  return next
-}
-
-function diagnosticText(data) {
-  if (typeof data === 'string') return data
-  if (Buffer.isBuffer(data)) return data.toString('utf8')
-  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8')
-  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf8')
-  return undefined
-}
-
-function safeModelEvent(data) {
-  try {
-    const text = diagnosticText(data)
-    if (text === undefined) return undefined
-    const event = JSON.parse(text)
-    if (event === null || typeof event !== 'object' || typeof event.type !== 'string') return undefined
-    const response = event.response
-    return {
-      type: event.type,
-      ...(['error', 'response.failed'].includes(event.type) ? { failed: true } : {}),
-      ...(response && typeof response === 'object' && typeof response.model === 'string' ? { model: response.model } : {}),
-      ...(response && typeof response === 'object' && typeof response.service_tier === 'string' ? { serviceTier: response.service_tier } : {}),
-      ...(response && typeof response === 'object' && Number.isSafeInteger(response.usage?.output_tokens) ? { outputTokens: response.usage.output_tokens } : {}),
-      ...(Number.isSafeInteger(response?.usage?.output_tokens_details?.reasoning_tokens) ? { reasoningTokens: response.usage.output_tokens_details.reasoning_tokens } : {}),
-    }
-  } catch {
-    return undefined
-  }
-}
 
 function normalizeProxy(raw) {
   if (typeof raw !== 'string' || raw.trim() === '') return undefined
@@ -163,6 +117,24 @@ function bodyBytes(body) {
   throw new TypeError('Unsupported Codex OAuth request body')
 }
 
+export function transportError(error, signal) {
+  if (signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') return error
+  if (!/^(?:ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ERR_STREAM_PREMATURE_CLOSE)$/.test(error?.code ?? '')) return error
+  // pi-ai currently flattens Error to its message. Preserve both the original
+  // typed cause and a stable transport signature for older host classifiers.
+  return Object.assign(new Error(`Network transport failure (${error.code}): ${error.message}`, { cause: error }), { code: error.code })
+}
+
+export function transportResponseBody(response, signal) {
+  const body = new PassThrough()
+  response.on('error', error => body.destroy(transportError(error, signal)))
+  // Cancelling the web reader must also release an idle underlying connection.
+  body.on('close', () => response.destroy())
+  const stream = Readable.toWeb(body)
+  response.pipe(body)
+  return stream
+}
+
 export function fetchThroughProxy(input, init, proxyUrl) {
   const target = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
   const body = bodyBytes(init?.body)
@@ -182,104 +154,35 @@ export function fetchThroughProxy(input, init, proxyUrl) {
       }
       const status = response.statusCode ?? 500
       const empty = init?.method === 'HEAD' || [204, 205, 304].includes(status)
-      resolve(new Response(empty ? null : Readable.toWeb(response), {
+      if (empty) response.resume()
+      resolve(new Response(empty ? null : transportResponseBody(response, init?.signal), {
         status,
         statusText: response.statusMessage,
         headers: responseHeaders,
       }))
     })
-    request.on('error', reject)
+    request.on('error', error => reject(transportError(error, init?.signal)))
     if (body) request.write(body)
     request.end()
   })
 }
 
-function createScopedWebSocketConstructor(WebSocketImpl = WebSocket) {
-  return class CodexScopedWebSocket extends WebSocketImpl {
-    constructor(url, protocolsOrOptions) {
-      const target = new URL(url.toString())
-      const scope = networkScope.getStore()
-      const route = scope?.webSocketRoute
-      const isCodex = target.hostname === CODEX_SUBSCRIPTION_HOST
-
-      let protocols
-      let webSocketOptions = {}
-      if (typeof protocolsOrOptions === 'string' || Array.isArray(protocolsOrOptions)) {
-        protocols = protocolsOrOptions
-      } else if (protocolsOrOptions && typeof protocolsOrOptions === 'object') {
-        webSocketOptions = { ...protocolsOrOptions }
-      }
-
-      if (isCodex) {
-        webSocketOptions.headers = officialCodexHeaders(webSocketOptions.headers)
-        if (route?.url) webSocketOptions.agent = new HttpsProxyAgent(route.url)
-      }
-
-      if (protocols === undefined) super(url, webSocketOptions)
-      else super(url, protocols, webSocketOptions)
-
-      this.codexSessionId = isCodex
-        ? String(webSocketOptions.headers?.['session-id'] ?? webSocketOptions.headers?.['Session-Id'] ?? randomUUID())
-        : undefined
-      this.codexThreadId = this.codexSessionId
-      this.codexWindowId = this.codexSessionId === undefined ? undefined : `${this.codexThreadId}:0`
-
-      if (isCodex && typeof this.addEventListener === 'function') {
-        this.addEventListener('message', event => {
-          const info = safeModelEvent(event?.data)
-          if (info !== undefined) this.codexRequestScope?.options?.onModelEvent?.(info)
-        })
-      }
-    }
-
-    send(...args) {
-      const scope = networkScope.getStore()
-      if (new URL(this.url).hostname !== CODEX_SUBSCRIPTION_HOST) return super.send(...args)
-
-      this.codexRequestScope = scope
-      scope?.options?.onTransport?.('websocket')
-      const raw = diagnosticText(args[0])
-      if (raw === undefined) return super.send(...args)
-
-      try {
-        const request = JSON.parse(raw)
-        if (request?.type !== 'response.create') return super.send(...args)
-        const turnId = randomUUID()
-        const turnMetadata = {
-          installation_id: CODEX_INSTALLATION_ID,
-          session_id: this.codexSessionId,
-          thread_id: this.codexThreadId,
-          turn_id: turnId,
-          window_id: this.codexWindowId,
-          request_kind: 'turn',
-          turn_started_at_unix_ms: Date.now(),
-        }
-        request.client_metadata = {
-          ...(request.client_metadata && typeof request.client_metadata === 'object' ? request.client_metadata : {}),
-          'x-codex-installation-id': CODEX_INSTALLATION_ID,
-          session_id: this.codexSessionId,
-          thread_id: this.codexThreadId,
-          'x-codex-window-id': this.codexWindowId,
-          turn_id: turnId,
-          'x-codex-turn-metadata': JSON.stringify(turnMetadata),
-        }
-        scope?.options?.onModelRequest?.({
-          model: typeof request.model === 'string' ? request.model : undefined,
-          serviceTier: typeof request.service_tier === 'string' ? request.service_tier : undefined,
-          reasoningEffort: request.reasoning?.effort,
-          responsesLite: request.client_metadata?.ws_request_header_x_openai_internal_codex_responses_lite === 'true',
-          continuation: typeof request.previous_response_id === 'string',
-          clientIdentity: CODEX_ORIGINATOR,
-        })
-        return super.send(JSON.stringify(request), ...args.slice(1))
-      } catch {
-        return super.send(...args)
-      }
-    }
-  }
-}
-
 export async function withCodexNetwork(run, options = {}) {
+  if (options.websocket && activeWebSocketScopes === 0) {
+    baseWebSocket = globalThis.WebSocket
+    const original = baseWebSocket
+    scopedWebSocket = new Proxy(original ?? WebSocket, {
+      construct(target, args, newTarget) {
+        const scope = networkScope.getStore()
+        const url = new URL(String(args[0]))
+        if (!scope?.options.websocket || url.protocol !== 'wss:' || url.hostname !== CODEX_SUBSCRIPTION_HOST) return Reflect.construct(target, args, newTarget)
+        const proxy = scope.options.websocketProxy
+        return new WebSocket(args[0], { ...args[1], ...(proxy ? { agent: new HttpsProxyAgent(proxy) } : {}) })
+      },
+    })
+    globalThis.WebSocket = scopedWebSocket
+  }
+  if (options.websocket) activeWebSocketScopes += 1
   if (activeScopes === 0) {
     baseFetch = globalThis.fetch
     scopedFetch = async (input, init) => {
@@ -289,12 +192,6 @@ export async function withCodexNetwork(run, options = {}) {
       const proxyFetch = scopedOptions.fetchThroughProxy ?? fetchThroughProxy
       const target = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
       if (target.protocol !== 'https:' || !allowedHosts.has(target.hostname)) return baseFetch(input, init)
-      let nextInit = init
-      if (target.hostname === CODEX_SUBSCRIPTION_HOST && target.pathname === '/backend-api/codex/responses') {
-        scopedOptions.onTransport?.('sse')
-        scopedOptions.onModelRequest?.({ clientIdentity: CODEX_ORIGINATOR })
-        nextInit = { ...init, headers: officialCodexHeaders(init?.headers) }
-      }
       let proxy = resolved.get(target.hostname)
       if (proxy === undefined) {
         proxy = resolveCodexProxy({ ...scopedOptions, target })
@@ -302,42 +199,24 @@ export async function withCodexNetwork(run, options = {}) {
       }
       const route = await proxy
       scopedOptions.onRoute?.(route.source)
-      return route.url === undefined ? baseFetch(input, nextInit) : proxyFetch(input, nextInit, route.url)
+      const response = await (route.url === undefined ? baseFetch(input, init) : proxyFetch(input, init, route.url))
+      return scopedOptions.transformResponse?.(response, target) ?? response
     }
     globalThis.fetch = scopedFetch
   }
   activeScopes += 1
-
   const scope = {
     options,
     allowedHosts: options.hosts ?? CODEX_HOSTS,
     resolved: new Map(),
-    webSocketRoute: undefined,
   }
-
-  const enableWebSocket = options.webSocket === true
-  if (enableWebSocket) {
-    const target = new URL(`https://${CODEX_SUBSCRIPTION_HOST}/backend-api/codex/responses`)
-    scope.webSocketRoute = await resolveCodexProxy({ ...options, target })
-    options.onRoute?.(scope.webSocketRoute.source)
-    if (activeWebSocketScopes === 0) {
-      baseWebSocket = globalThis.WebSocket
-      scopedWebSocket = createScopedWebSocketConstructor(options.WebSocketImpl ?? WebSocket)
-      globalThis.WebSocket = scopedWebSocket
-    }
-    activeWebSocketScopes += 1
-  }
-
   try {
     return await networkScope.run(scope, run)
   } finally {
-    if (enableWebSocket) {
-      activeWebSocketScopes -= 1
-      if (activeWebSocketScopes === 0) {
-        if (globalThis.WebSocket === scopedWebSocket) globalThis.WebSocket = baseWebSocket
-        baseWebSocket = undefined
-        scopedWebSocket = undefined
-      }
+    if (options.websocket && --activeWebSocketScopes === 0) {
+      if (globalThis.WebSocket === scopedWebSocket) globalThis.WebSocket = baseWebSocket
+      baseWebSocket = undefined
+      scopedWebSocket = undefined
     }
     activeScopes -= 1
     if (activeScopes === 0) {
@@ -368,83 +247,20 @@ const elapsedBucket = elapsed => elapsed < 1_000 ? 'under-1s' : elapsed < 5_000 
 export function createCodexNetworkTransport(options = {}) {
   const attempts = new Map()
   const now = options.now ?? Date.now
-  const run = async (area, operation) => {
+  const run = async (area, operation, connection = {}) => {
     const startedAt = now()
     let route = attempts.get(area)?.route ?? 'direct'
-    let transport = attempts.get(area)?.transport
-    let sawWebSocket = false
-    let sawSse = false
     let routed = false
-    let requestedModel
-    let requestedServiceTier
-    let serverModel
-    let serverServiceTier
-    let clientIdentity
-    let firstEventMs
-    let firstTextMs
-    let outputTokens
-    let reasoningTokens, reasoningEffort, responsesLite, continuation
-    let providerFailed = false
-    const safeElapsed = () => Math.max(0, now() - startedAt)
-    const transportFields = () => ({
-      ...(transport === undefined ? {} : { transport }),
-      ...(sawWebSocket && sawSse ? { fallback: 'websocket-to-sse' } : {}),
-      ...(clientIdentity === undefined ? {} : { clientIdentity }),
-      ...(requestedModel === undefined ? {} : { requestedModel }),
-      ...(requestedServiceTier === undefined ? {} : { requestedServiceTier }),
-      ...(serverModel === undefined ? {} : { serverModel }),
-      ...(serverServiceTier === undefined ? {} : { serverServiceTier }),
-      ...(firstEventMs === undefined ? {} : { firstEventMs }),
-      ...(firstTextMs === undefined ? {} : { firstTextMs }),
-      ...(outputTokens === undefined ? {} : { outputTokens }),
-      ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
-      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-      ...(responsesLite === undefined ? {} : { responsesLite }),
-      ...(continuation === undefined ? {} : { continuation }),
-      ...(area === 'model' ? { durationMs: safeElapsed() } : {}),
-    })
     try {
-      const value = await withCodexNetwork(operation, {
-        ...options,
-        webSocket: area === 'model',
-        onRoute: source => { route = source; routed = true },
-        onTransport: value => {
-          if (value === 'websocket') sawWebSocket = true
-          if (value === 'sse') sawSse = true
-          transport = value
-          options.onTransport?.(value)
-        },
-        onModelRequest: info => {
-          if (typeof info?.clientIdentity === 'string') clientIdentity = info.clientIdentity
-          if (typeof info?.model === 'string') requestedModel = info.model
-          if (typeof info?.serviceTier === 'string') requestedServiceTier = info.serviceTier
-          reasoningEffort = info?.reasoningEffort
-          responsesLite = info?.responsesLite
-          continuation = info?.continuation
-          options.onModelRequest?.(info)
-        },
-        onModelEvent: info => {
-          if (info?.failed) providerFailed = true
-          const elapsed = safeElapsed()
-          if (firstEventMs === undefined) firstEventMs = elapsed
-          if (info?.type === 'response.output_text.delta' && firstTextMs === undefined) firstTextMs = elapsed
-          if (typeof info?.model === 'string') serverModel = info.model
-          if (typeof info?.serviceTier === 'string') serverServiceTier = info.serviceTier
-          if (Number.isSafeInteger(info?.outputTokens) && info.outputTokens >= 0) outputTokens = info.outputTokens
-          if (Number.isSafeInteger(info?.reasoningTokens)) reasoningTokens = info.reasoningTokens
-          options.onModelEvent?.(info)
-        },
-      })
+      const value = await withCodexNetwork(operation, { ...options, ...connection, onRoute: source => { route = source; routed = true } })
       if (value instanceof Response && !value.ok) {
-        attempts.set(area, { status: 'failed', stage: 'http', code: 'http-error', httpStatus: value.status, route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
-      } else if (providerFailed) {
-        attempts.set(area, { status: 'failed', stage: 'provider', code: 'provider-error', route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
+        attempts.set(area, { status: 'failed', stage: 'http', code: 'http-error', httpStatus: value.status, route, elapsed: elapsedBucket(now() - startedAt) })
       } else if (routed || value instanceof Response) {
-        attempts.set(area, { status: 'ok', route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
+        attempts.set(area, { status: 'ok', route, elapsed: elapsedBucket(now() - startedAt) })
       }
       return value
     } catch (error) {
-      if (routed) attempts.set(area, { status: 'failed', stage: 'transport', code: classifyTransportError(error), route, elapsed: elapsedBucket(now() - startedAt), ...transportFields() })
+      if (routed) attempts.set(area, { status: 'failed', stage: 'transport', code: classifyTransportError(error), route, elapsed: elapsedBucket(now() - startedAt) })
       throw error
     }
   }

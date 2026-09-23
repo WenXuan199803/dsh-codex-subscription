@@ -2,13 +2,9 @@ import { PACKAGE_VERSION } from './version.js'
 
 const requestAreas = new Set(['login', 'model', 'catalog', 'quota', 'quota-reset', 'search', 'image'])
 const statuses = new Set(['ok', 'failed'])
-const stages = new Set(['transport', 'http', 'provider'])
-const codes = new Set(['timeout', 'dns', 'tls', 'connection', 'network', 'http-error', 'provider-error'])
+const stages = new Set(['transport', 'http'])
+const codes = new Set(['timeout', 'dns', 'tls', 'connection', 'network', 'http-error'])
 const routes = new Set(['direct', 'environment', 'system', 'bypass'])
-const transports = new Set(['websocket', 'sse'])
-const fallbacks = new Set(['websocket-to-sse'])
-const clientIdentities = new Set(['codex_cli_rs'])
-const serviceTiers = new Set(['default', 'priority', 'flex'])
 const elapsedBuckets = new Set(['under-1s', '1-5s', '5-15s', 'over-15s'])
 
 function safeRequests(network) {
@@ -23,21 +19,6 @@ function safeRequests(network) {
       ...(codes.has(value.code) ? { code: value.code } : {}),
       ...(Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? { httpStatus: value.httpStatus } : {}),
       route: value.route,
-      ...(transports.has(value.transport) ? { transport: value.transport } : {}),
-      ...(fallbacks.has(value.fallback) ? { fallback: value.fallback } : {}),
-      ...(clientIdentities.has(value.clientIdentity) ? { clientIdentity: value.clientIdentity } : {}),
-      ...(typeof value.requestedModel === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,95}$/u.test(value.requestedModel) ? { requestedModel: value.requestedModel } : {}),
-      ...(serviceTiers.has(value.requestedServiceTier) ? { requestedServiceTier: value.requestedServiceTier } : {}),
-      ...(typeof value.serverModel === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,95}$/u.test(value.serverModel) ? { serverModel: value.serverModel } : {}),
-      ...(serviceTiers.has(value.serverServiceTier) ? { serverServiceTier: value.serverServiceTier } : {}),
-      ...(Number.isSafeInteger(value.firstEventMs) && value.firstEventMs >= 0 && value.firstEventMs <= 3_600_000 ? { firstEventMs: value.firstEventMs } : {}),
-      ...(Number.isSafeInteger(value.firstTextMs) && value.firstTextMs >= 0 && value.firstTextMs <= 3_600_000 ? { firstTextMs: value.firstTextMs } : {}),
-      ...(Number.isSafeInteger(value.outputTokens) && value.outputTokens >= 0 && value.outputTokens <= 10_000_000 ? { outputTokens: value.outputTokens } : {}),
-      ...(Number.isSafeInteger(value.reasoningTokens) && value.reasoningTokens >= 0 && value.reasoningTokens <= 10_000_000 ? { reasoningTokens: value.reasoningTokens } : {}),
-      ...(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(value.reasoningEffort) ? { reasoningEffort: value.reasoningEffort } : {}),
-      ...(typeof value.responsesLite === 'boolean' ? { responsesLite: value.responsesLite } : {}),
-      ...(typeof value.continuation === 'boolean' ? { continuation: value.continuation } : {}),
-      ...(Number.isSafeInteger(value.durationMs) && value.durationMs >= 0 && value.durationMs <= 3_600_000 ? { durationMs: value.durationMs } : {}),
       elapsed: value.elapsed,
     }
   }
@@ -57,6 +38,17 @@ export async function createSubscriptionDiagnostics({ auth, preferences, login =
 
   const preference = preferences.status()
   const catalog = modelCatalog?.status?.()
+  // Report only bounded capability identifiers, never the raw server catalog.
+  const gaps = (modelCatalog?.capabilityGaps?.() ?? []).slice(0, 20).flatMap(value => {
+    if (!value || typeof value.model !== 'string' || !/^[a-z][a-z0-9._-]{0,79}$/u.test(value.model)) return []
+    const fields = Object.fromEntries(['reasoning', 'inputs', 'speeds'].flatMap(key => {
+      const names = [...new Set((Array.isArray(value[key]) ? value[key] : [])
+        .filter(name => typeof name === 'string' && /^[a-z][a-z0-9_-]{0,31}$/u.test(name)))].slice(0, 16)
+      return names.length ? [[key, names]] : []
+    }))
+    return Object.keys(fields).length ? [{ model: value.model, ...fields }] : []
+  })
+  if (gaps.length) issues.push({ code: 'catalog-capabilities-not-adapted' })
   return {
     schemaVersion: 3,
     package: 'dsh-codex-subscription',
@@ -67,7 +59,7 @@ export async function createSubscriptionDiagnostics({ auth, preferences, login =
     requests: safeRequests(network),
     ...(catalog && ['fallback', 'online'].includes(catalog.source)
       && ['idle', 'refreshing', 'ok', 'failed'].includes(catalog.refresh)
-      ? { catalog: { source: catalog.source, refresh: catalog.refresh } } : {}),
+      ? { catalog: { source: catalog.source, refresh: catalog.refresh, ...(gaps.length ? { unsupported: gaps } : {}) } } : {}),
     configuration: {
       contextMode: preference.contextMode,
       quickQuotaMode: preference.quickQuotaMode,

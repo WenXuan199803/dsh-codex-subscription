@@ -1,7 +1,7 @@
 # Native sketch commands — development interface
 
-This document describes 2.1.0-beta.5, including protocol v2 changes.
-Stable 2.0.1 does not include Agent drawing.
+This document describes 2.1.0 and protocol v2.
+Agent drawing remains an opt-in Beta feature.
 
 `codex_sketch` is a DSH-native tool, enabled only when both sketch editing and
 Agent drawing are enabled. Both are opt-in Beta settings. The toolbar button is
@@ -103,3 +103,38 @@ The user also verified the PSD in Photoshop and supplied a screenshot showing al
 The in-app browser previously canceled its blob download; successful file
 encoding and roundtrip do not establish successful browser download delivery.
 Artifacts are retained locally in `.artifacts/canvas-behind/`.
+
+## Draft reliability (development)
+
+After a completed edit and 1.5 seconds of inactivity, the board stores a local
+recovery checkpoint separately from named drafts. A page reload can restore
+that checkpoint and shows a dismissible notice. It does not promise to recover
+an in-progress stroke or edits made immediately before a crash. Explicit save
+updates the draft and clears its checkpoint in one transaction. A failed save
+preserves the previous persisted draft. Exports do not require a successful
+local save, so a full draft store cannot block exporting. Clearing an unsaved
+canvas and closing it removes its recovery checkpoint. Recovery is suspended during agent runs;
+`finish` continues to save explicitly.
+
+The browser database migrates from schema 1 to 2 without deleting existing
+drafts. Lists read metadata; full documents are fetched only when opened.
+Older plugin builds that explicitly open schema 1 cannot open the upgraded
+database: export native drafts before downgrading. Storage keeps the existing
+32-million-character budget, shared by at most 20 named drafts and 20 recovery
+checkpoints. It refuses overflow instead of silently deleting drafts.
+
+At most eight eligible idle session documents remain resident. Mounted, dirty,
+running and user-stopped sessions are protected. Evicted saved sessions retain
+a draft ID and reload on return; their undo history is not retained. This is
+not a hard cap on all memory, since unsaved work takes priority.
+
+The agent bridge polls every 2 seconds while idle and 350 milliseconds during
+a run. Returning to the window or reconnecting the network wakes the bridge
+after failed retries. Only one poll/connect is in flight; writes still use
+claim checks and request receipts rather than automatic replay.
+
+Storage migration blocked by another window is reported without leaving a
+pending upgrade that later mutates the database. Close the other window and use
+Retry. Recovery failures keep editing and agent writes disabled until recovery
+succeeds; the board can still be closed. Incoming images wait for recovery and
+file operations to finish before being marked received.
