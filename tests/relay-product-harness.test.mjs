@@ -661,6 +661,16 @@ test('Codex search uses the account pool when its active credential gets HTTP 50
   assert.deepEqual(scenario.requests.filter(item => item.path.endsWith('/search')).map(item => item.account), ['a', 'b'])
 })
 
+test('Codex search also waits through a short provider-wide outage across account rounds', async t => {
+  let requests = 0
+  const scenario = { requests: [], respond: () => ({}), searchRespond: () => ++requests <= 8 ? { status: 503 } : {} }
+  const product = await fixture(t, scenario)
+  await addAccounts(product)
+  const result = await product.searchProviders.get('codex-subscription').search({ query: 'fixture' }, AbortSignal.timeout(10000))
+  assert.equal(result.sources.length, 1)
+  assert.equal(requests, 9)
+})
+
 test('search stream interruption returns a complete B result, not partial A JSON', async t => {
   const scenario = { requests: [], respond: () => ({}), searchRespond: account => account === 'a' ? { disconnect: 'during' } : {} }
   const product = await fixture(t, scenario)
