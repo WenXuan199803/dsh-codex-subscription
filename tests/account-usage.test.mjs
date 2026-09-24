@@ -127,7 +127,7 @@ test('weekly quota pressure is cached for hot-path scheduler reads without netwo
     createReader: () => ({ async read() {
       reads += 1
       return { rateLimits: [{ id: 'codex', windows: [
-        { windowSeconds: 604_800, remainingPercent: 80, resetsAt },
+        { windowSeconds: 604_800, remainingPercent: 80, resetsAt: resetAt },
       ] }] }
     } }),
   })
