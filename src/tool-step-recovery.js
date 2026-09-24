@@ -1,3 +1,5 @@
+import { TOOL_RUNTIME_SCHEDULER } from '@deepseek-ai/dsh-tools'
+
 const TRANSIENT_TOOL_CODES = new Set([
   'WEB_PROVIDER_ERROR', 'WEB_FETCH_TIMEOUT', 'TOOL_TIMEOUT',
   'TRANSPORT', 'EIO', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT',
@@ -51,26 +53,36 @@ function wait(ms, signal) {
 }
 
 /** Retry only incomplete, read-only tool attempts before DSH commits a result. */
-export async function recoverToolStep(exec, next, onRetry = () => {}) {
+export async function recoverToolStep(exec, next, retryDispatch, onRetry = () => {}) {
   if (exec.agent?.session?.requestContext?.()?.provider !== 'openai-codex' || !readOnlyTool(exec)) return next()
-  // Cordis consumes the downstream waterfall listener list on the first
-  // next(). Keep a separate total deadline for later attempts even if another
-  // timeout wrapper was downstream of this hook and is no longer in that list.
+  // Cordis's next() is single-pass. Later attempts re-enter DSH's dispatch
+  // scheduler so every execute wrapper runs again, under one total deadline.
   const parentSignal = exec.signal
   exec.signal = AbortSignal.any([parentSignal, AbortSignal.timeout(90_000)])
   try {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const result = await next()
-      if (exec.signal.aborted || !retryableResult(exec, result) || attempt === 2) return result
+    let result = await next()
+    for (let attempt = 1; attempt < 3; attempt++) {
+      if (exec.signal.aborted || !retryableResult(exec, result) || retryDispatch === undefined) return result
       onRetry(exec.name, attempt + 1)
-      await wait(50 * (attempt + 1), exec.signal)
+      await wait(50 * attempt, exec.signal)
+      result = await retryDispatch()
     }
+    return result
   } finally {
     exec.signal = parentSignal
   }
 }
 
 export function registerToolStepRecovery(ctx) {
-  return ctx.on?.('tools/execute', (exec, next) => recoverToolStep(exec, next,
-    (name, attempt) => ctx.logger?.debug?.('Codex read-only tool %s retry %d', name, attempt)))
+  const retrying = new WeakSet()
+  return ctx.on?.('tools/execute', (exec, next) => {
+    if (retrying.has(exec)) return next()
+    const scheduler = ctx.tools?.[TOOL_RUNTIME_SCHEDULER]
+    const dispatch = typeof scheduler?.dispatch === 'function' ? async () => {
+      retrying.add(exec)
+      try { return (await scheduler.dispatch(exec)).result } finally { retrying.delete(exec) }
+    } : undefined
+    return recoverToolStep(exec, next, dispatch,
+      (name, attempt) => ctx.logger?.debug?.('Codex read-only tool %s retry %d', name, attempt))
+  })
 }

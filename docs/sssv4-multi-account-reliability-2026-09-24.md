@@ -2,7 +2,7 @@
 
 基线：`e72c4d1d76ac82c63e0b02c3f1fbb1857282fb73`，插件 `2.1.33`。本专项使用假 OAuth 账号、本地 HTTP/SSE 服务器、可控 WebSocket、DSH `ToolRuntime` 和插件真实 `apply` 注册入口；没有消耗真实账号额度。测试与实现位于本仓库，运行状态须另按尚书省正式入口验收。
 
-最后一次完整 `pnpm check`：704 项测试，678 通过、0 失败、26 项按平台条件跳过；服务端/client 构建及 `2.1.34` 发行包打包通过。该数字代表插件仓库测试，不代表正式 DSH 已加载该版。
+最后一次完整 `pnpm check`：702 项测试，676 通过、0 失败、26 项按平台条件跳过；服务端/client 构建及 `2.1.34` 发行包打包通过。该数字代表插件仓库测试，不代表正式 DSH 已加载该版。
 
 ## 原始 14 项验收索引
 
@@ -68,7 +68,7 @@ flowchart TD
 4. 返回模型与请求模型不同时旧逻辑照常接受。SSE 与 WebSocket 在有效输出前检查上游 `response.model`；图片工具也在保存前检查报告模型。模型字段缺席时不能凭空证明真实模型。
 5. 云端 compaction 曾包在调度器外层，A 的加密 checkpoint 可进入 B 请求。现于每次选定账号后再处理 compaction。pi-ai replayState 加账号作用域，换号保留可读历史并剥离上个账号的 response id、签名和加密 reasoning。旧无作用域 replayState 保守降级为完整历史。WebSocket 另有实际帧测试：A 第二次请求使用 `previous_response_id` 优化，换 B 后该字段消失且发送完整历史。
 6. 搜索与图片原来直接用 active account，绕过池。现在经统一账号选择和故障分类；搜索响应体中断、图片中断及空 artifact 均能接力。
-7. DSH 对工具异常只提交 `isError` 并进入下个模型步骤，没有自动保证重做。新增 `tools/execute` 钩子，限定在 Codex 发起的只读工具与保守 Shell 查询，完整成功前最多重试三次。写/Git/消息不进入该路径。
+7. DSH 对工具异常只提交 `isError` 并进入下个模型步骤，没有自动保证重做。新增 `tools/execute` 钩子，限定在 Codex 发起的只读工具与保守 Shell 查询，完整成功前最多重试三次。发现 Cordis `next()` 是单次消费的流水线，直接二次调用会跳过后续策略钩子；回归测试先复现后，重试改为重新进入 DSH dispatch scheduler，每次都经过完整的 `tools/execute` 包装链，只在最终提交一次工具结果。写/Git/消息不进入该路径。
 8. 一次 `response.failed` 被额外记成“stream incomplete”，使诊断链重复。已用结束状态区分流内失败与真正无 finish 截断。
 9. Native Codex subagent 在启动认证阶段原来只读 active account。现在启动前经同一 scheduler 选账号，A 认证失败可在启动 child 前转 B，且 refresh 继续锁定 B；child 已运行后的任务接力仍待外部状态协议。
 

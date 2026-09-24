@@ -74,7 +74,7 @@ function host(state) {
     return envelope.result.value
   }
   return {
-    rpc, records, searchProviders, tools, saves, toolHooks, get adapter() { return adapter },
+    ctx, rpc, records, searchProviders, tools, saves, toolHooks, get adapter() { return adapter },
     restart() { return host({ records, settings }) },
   }
 }
@@ -705,42 +705,20 @@ test('image model substitution is rejected before saving any A artifact', async 
   assert.deepEqual(scenario.requests.filter(item => item.path.endsWith('/images/generations')).map(item => item.account), ['a', 'b'])
 })
 
-test('actual plugin tool hook retries interrupted web read, file read and safe Shell query to full results', async t => {
-  const product = await fixture(t, { requests: [], respond: () => ({}) })
-  const cordis = new Context()
-  for (const hook of product.toolHooks) cordis.on('tools/execute', hook)
-  const agent = { session: { requestContext: () => ({ provider: 'openai-codex', model: 'gpt-5.6-luna' }) } }
-  const failed = code => ({ isError: true, error: { message: 'stream disconnected', info: { name: 'Error', code } }, content: [{ type: 'text', text: 'Error: partial' }] })
-  const complete = value => ({ isError: false, value, content: [{ type: 'text', text: 'COMPLETE' }] })
-  const cases = [
-    { name: 'web_search', arguments: { queries: ['fixture'] }, code: 'WEB_PROVIDER_ERROR', value: { sources: [{ url: 'https://example.test/complete' }], truncated: false } },
-    { name: 'web_fetch', arguments: { url: 'https://example.test/page' }, code: 'WEB_PROVIDER_ERROR', value: { url: 'https://example.test/page', statusCode: 200, body: { kind: 'text', content: 'COMPLETE' }, truncated: false } },
-    { name: 'read', arguments: { filePath: '/tmp/fixture' }, code: 'EIO', value: { path: '/tmp/fixture', lines: ['COMPLETE'], totalLines: 1 } },
-    { name: 'bash', arguments: { command: 'pwd', description: 'Read working directory' }, code: 'EIO', value: { kind: 'foreground', stdout: { text: '/tmp/complete' }, exitCode: 0 } },
-  ]
-  for (const item of cases) {
-    let attempts = 0
-    const result = await cordis.waterfall('tools/execute', { ...item, agent, signal: AbortSignal.timeout(3000) }, async () => ++attempts === 1 ? failed(item.code) : complete(item.value))
-    assert.equal(attempts, 2, item.name)
-    assert.equal(result.isError, false, item.name)
-    assert.deepEqual(result.value, item.value)
-  }
-  let timedOutRuns = 0
-  const shell = await cordis.waterfall('tools/execute', { name: 'bash', arguments: { command: 'pwd' }, agent, signal: AbortSignal.timeout(3000) }, async () => ++timedOutRuns === 1
-    ? complete({ kind: 'foreground', timedOut: true, stdout: { text: 'partial' } })
-    : complete({ kind: 'foreground', timedOut: false, stdout: { text: '/tmp/complete' } }))
-  assert.equal(timedOutRuns, 2)
-  assert.equal(shell.value.stdout.text, '/tmp/complete')
-})
-
 test('DSH ToolRuntime commits only completed read-only tool results after interrupted bodies', async t => {
   const product = await fixture(t, { requests: [], respond: () => ({}) })
   const ctx = new Context()
   ctx.systemPrompt = { tools() {} }
   const runtime = new ToolRuntime(ctx)
+  product.ctx.tools = runtime
   for (const hook of product.toolHooks) ctx.on('tools/execute', hook)
+  const audits = new Map()
+  ctx.on('tools/execute', async (exec, next) => {
+    audits.set(exec.name, (audits.get(exec.name) ?? 0) + 1)
+    return next()
+  })
   const attempts = new Map()
-  for (const [name, code] of [['web_fetch', 'WEB_PROVIDER_ERROR'], ['read', 'EIO'], ['bash', 'EIO']]) {
+  for (const [name, code] of [['web_search', 'WEB_PROVIDER_ERROR'], ['web_fetch', 'WEB_PROVIDER_ERROR'], ['read', 'EIO'], ['bash', 'EIO']]) {
     runtime.register({
       name, description: 'fixture read-only tool', parameters: { type: 'object', properties: {} },
       output: { schema: { type: 'object', properties: { text: { type: 'string' } } }, render: (_args, value) => [{ type: 'text', text: value.text }] },
@@ -753,44 +731,23 @@ test('DSH ToolRuntime commits only completed read-only tool results after interr
     })
   }
   const agent = { session: { requestContext: () => ({ provider: 'openai-codex' }) } }
-  for (const [name, argumentsValue] of [['web_fetch', { url: 'https://example.test/page' }], ['read', { filePath: '/tmp/fixture' }], ['bash', { command: 'pwd' }]]) {
+  for (const [name, argumentsValue] of [['web_search', { queries: ['fixture'] }], ['web_fetch', { url: 'https://example.test/page' }], ['read', { filePath: '/tmp/fixture' }], ['bash', { command: 'pwd' }]]) {
     const result = await runtime.execute({ name, arguments: argumentsValue, callId: `tool-${name}`, signal: AbortSignal.timeout(3000), agent })
     assert.equal(result.isError, false, `${name}: ${JSON.stringify({ result, count: attempts.get(name), hooks: product.toolHooks.length })}`)
     assert.equal(result.value.text, `COMPLETE_${name}`)
     assert.equal(attempts.get(name), 2)
-  }
-})
-
-test('uncertain write, modifying Shell, Git and message actions are never blindly repeated', async t => {
-  assert.equal(isSafeShellQuery('rg --pre executable pattern'), false)
-  assert.equal(isSafeShellQuery('pwd; echo altered > state.txt'), false)
-  const product = await fixture(t, { requests: [], respond: () => ({}) })
-  const cordis = new Context()
-  for (const hook of product.toolHooks) cordis.on('tools/execute', hook)
-  const agent = { session: { requestContext: () => ({ provider: 'openai-codex' }) } }
-  for (const item of [
-    { name: 'write', arguments: { filePath: '/tmp/fixture', content: 'done' } },
-    { name: 'bash', arguments: { command: 'echo done > state.txt', description: 'Write state' } },
-    { name: 'bash', arguments: { command: 'git commit -m done', description: 'Commit state' } },
-    { name: 'send_message', arguments: { to: 'recipient', text: 'done' } },
-  ]) {
-    let dispatches = 0, externalEffect = false
-    const result = await cordis.waterfall('tools/execute', { ...item, agent, signal: AbortSignal.timeout(3000) }, async () => {
-      dispatches++
-      externalEffect = true // The operation committed before its acknowledgement was lost.
-      return { isError: true, error: { message: 'connection reset after commit', info: { code: 'ECONNRESET' } }, content: [{ type: 'text', text: 'Outcome unknown' }] }
-    })
-    assert.equal(result.isError, true)
-    assert.equal(dispatches, 1, item.name)
-    assert.equal(externalEffect, true, 'reconciliation reads real state before any retry decision')
+    assert.equal(audits.get(name), 2, 'each attempt must traverse every downstream DSH wrapper')
   }
 })
 
 test('DSH tool registry leaves uncertain file, Git and message effects for external-state reconciliation', async t => {
+  assert.equal(isSafeShellQuery('rg --pre executable pattern'), false)
+  assert.equal(isSafeShellQuery('pwd; echo altered > state.txt'), false)
   const product = await fixture(t, { requests: [], respond: () => ({}) })
   const ctx = new Context()
   ctx.systemPrompt = { tools() {} }
   const runtime = new ToolRuntime(ctx)
+  product.ctx.tools = runtime
   for (const hook of product.toolHooks) ctx.on('tools/execute', hook)
   const scratch = mkdtempSync(join(tmpdir(), 'codex-relay-effects-'))
   t.after(() => rmSync(scratch, { recursive: true, force: true }))
