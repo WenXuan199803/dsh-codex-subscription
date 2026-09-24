@@ -19,6 +19,17 @@ import {
 
 const FAST_SERVICE_TIER = 'priority'
 
+function quotaRetryAfterMs(payload) {
+  const quota = payload?.error ?? payload
+  if (quota?.type !== 'usage_limit_reached' && quota?.code !== 'usage_limit_reached') return undefined
+  const seconds = Number(quota.resets_in_seconds)
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000
+  const absolute = Number(quota.resets_at)
+  if (!Number.isFinite(absolute) || absolute <= 0) return undefined
+  const at = absolute < 10_000_000_000 ? absolute * 1000 : absolute
+  return Math.max(1_000, at - Date.now())
+}
+
 export { createModels } from '@earendil-works/pi-ai'
 export { createOpenAICodexProvider as openaiCodexProvider }
 
@@ -108,6 +119,7 @@ export function openaiCodexSubscriptionProvider({
     let ready
     let running
     let finish
+    const relayMetadata = {}
     const start = () => {
       if (ready) return ready
       ready = new Promise((resolve, reject) => {
@@ -125,8 +137,16 @@ export function openaiCodexSubscriptionProvider({
           }, {
             ...networkOptions,
             expectedModel: requestedModel,
-            transformResponse(response, target) {
-              return guardSseModel(networkOptions.transformResponse?.(response, target) ?? response, target, requestedModel)
+            async transformResponse(response, target) {
+              const transformed = await networkOptions.transformResponse?.(response, target) ?? response
+              if (!transformed.ok && target.hostname === 'chatgpt.com' && target.pathname === '/backend-api/codex/responses') {
+                try { relayMetadata.retryAfterMs = quotaRetryAfterMs(await transformed.clone().json()) } catch { /* original response remains authoritative */ }
+              }
+              return guardSseModel(transformed, target, requestedModel, event => {
+                if (event?.type !== 'response.failed' && event?.type !== 'error') return
+                const delay = quotaRetryAfterMs(event.response?.error ?? event.error)
+                if (delay > 0) relayMetadata.retryAfterMs = delay
+              })
             },
           })).catch(reject)
         }).catch(reject)
@@ -142,7 +162,14 @@ export function openaiCodexSubscriptionProvider({
           finish?.()
           await running
         }
-        return result.done ? result : { ...result, value: normalizeTransportEvent(result.value, request.options?.signal) }
+        if (result.done) return result
+        let event = normalizeTransportEvent(result.value, request.options?.signal)
+        if (event?.type === 'error' && relayMetadata.retryAfterMs > 0
+          && /usage limit|usage_limit_reached|quota/iu.test(event.error?.errorMessage ?? '')) {
+          event = { ...event, error: { ...event.error,
+            errorMessage: `${event.error.errorMessage} resets_in_seconds: ${Math.ceil(relayMetadata.retryAfterMs / 1000)}` } }
+        }
+        return { ...result, value: event }
       } catch (error) {
         finish?.()
         await running?.catch(() => {})

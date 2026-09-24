@@ -1,5 +1,5 @@
 /** Validate the upstream model before the buffered adapter exposes any output. */
-export function guardSseModel(response, target, requestedModel) {
+export function guardSseModel(response, target, requestedModel, onFrame = () => {}) {
   if (target.hostname !== 'chatgpt.com' || target.pathname !== '/backend-api/codex/responses'
     || !response.ok || !response.body || typeof requestedModel !== 'string') return response
   const decoder = new TextDecoder(), encoder = new TextEncoder()
@@ -9,6 +9,7 @@ export function guardSseModel(response, target, requestedModel) {
       if (!line.startsWith('data:')) continue
       let event
       try { event = JSON.parse(line.slice(5).trim()) } catch { continue }
+      onFrame(event)
       if (!['response.created', 'response.completed', 'response.done'].includes(event?.type)) continue
       const actual = event.response?.model
       if (typeof actual === 'string' && actual.length > 0 && actual !== requestedModel) {

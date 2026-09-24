@@ -56,7 +56,7 @@ function classifyFailure(failure = {}) {
   }
   if ([408].includes(status) || TRANSPORT_CODES.has(code) || /^(?:CERT_|ERR_TLS_|ERR_SSL_)/u.test(code)
     || /TIMEOUT|NETWORK|CONNECTION|TRANSPORT|SOCKET|STREAM_INCOMPLETE/u.test(code)
-    || /timed? out|ECONN|EPIPE|EOF|network/iu.test(message)) {
+    || /timeout|timed? out|ECONN|EPIPE|EOF|network/iu.test(message)) {
     return { retryable: true, scope: 'transport', reason: 'transient', cooldownMs: retryAfterMs ?? 10 * 1000 }
   }
   if ([500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526].includes(status)

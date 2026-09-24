@@ -15,12 +15,12 @@ import { isSafeShellQuery } from '../src/tool-step-recovery.js'
 const jwt = id => `e30.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: id } })).toString('base64url')}.fixture`
 const event = value => `data: ${JSON.stringify(value)}\n\n`
 const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
-const completed = id => [
-  { type: 'response.created', response: { id: `response-${id}`, model: 'gpt-5.6-luna' } },
+const completed = (id, model = 'gpt-5.6-luna') => [
+  { type: 'response.created', response: { id: `response-${id}`, model } },
   { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: `message-${id}`, role: 'assistant', content: [] } },
   { type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: `ok-${id}` },
   { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: `message-${id}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: `ok-${id}`, annotations: [] }] } },
-  { type: 'response.done', response: { id: `response-${id}`, model: 'gpt-5.6-luna', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+  { type: 'response.done', response: { id: `response-${id}`, model, status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
 ]
 
 function host(state) {
@@ -94,13 +94,14 @@ async function fixture(t, scenario) {
     try { parsedBody = body ? JSON.parse(body) : undefined } catch { parsedBody = body }
     scenario.requests.push({ account, path: request.url, body: parsedBody, headers: request.headers })
     if (request.url.endsWith('/oauth/token')) {
-      reply.writeHead(400, { 'content-type': 'application/json' })
-      reply.end(JSON.stringify({ error: 'invalid_grant' }))
+      const outcome = await scenario.authRespond?.(parsedBody) ?? { status: 400, body: { error: 'invalid_grant' } }
+      reply.writeHead(outcome.status, { 'content-type': 'application/json' })
+      reply.end(JSON.stringify(outcome.body))
       return
     }
     if (request.url.includes('/models')) {
       reply.writeHead(200, { 'content-type': 'application/json' })
-      reply.end(JSON.stringify({ models: [] }))
+      reply.end(JSON.stringify({ models: scenario.models ?? [] }))
       return
     }
     if (request.url.endsWith('/search')) {
@@ -133,7 +134,10 @@ async function fixture(t, scenario) {
     if (outcome.disconnect === 'before') { reply.destroy(); return }
     if (outcome.status) {
       reply.writeHead(outcome.status, { 'content-type': 'application/json' })
-      reply.end(JSON.stringify({ error: { code: outcome.code ?? 'server_is_overloaded', message: outcome.message ?? 'server_is_overloaded' } }))
+      reply.end(JSON.stringify({ error: {
+        code: outcome.code ?? 'server_is_overloaded', message: outcome.message ?? 'server_is_overloaded',
+        ...(outcome.resetsInSeconds === undefined ? {} : { type: 'usage_limit_reached', resets_in_seconds: outcome.resetsInSeconds }),
+      } }))
       return
     }
     reply.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -143,7 +147,17 @@ async function fixture(t, scenario) {
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   const original = globalThis.fetch
-  globalThis.fetch = (input, init) => original(`http://127.0.0.1:${server.address().port}${new URL(String(input)).pathname}`, init)
+  globalThis.fetch = (input, init) => {
+    const target = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url)
+    const account = new Headers(init?.headers).get('chatgpt-account-id')
+    const fault = scenario.transportFault?.(target, account)
+    if (fault) {
+      scenario.transportAttempts ??= []
+      scenario.transportAttempts.push({ account, path: target.pathname, code: fault.code })
+      return Promise.reject(Object.assign(new Error(fault.message ?? `Network transport failure (${fault.code})`), { code: fault.code }))
+    }
+    return original(`http://127.0.0.1:${server.address().port}${target.pathname}`, init)
+  }
   t.after(async () => { globalThis.fetch = original; await new Promise(resolve => server.close(resolve)) })
   return host({})
 }
@@ -156,13 +170,15 @@ async function addAccounts(product, names = ['a', 'b']) {
 
 async function run(product, sessionId = 'same-session', extra = {}) {
   const chunks = []
-  for await (const chunk of product.adapter.stream({
+  const options = {
     provider: 'openai-codex', model: 'gpt-5.6-luna', sessionId,
-    signal: AbortSignal.timeout(3000),
+    signal: AbortSignal.timeout(10000),
     systemPrompt: 'Keep the plan',
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Finish task step two' }] }],
     ...extra,
-  })) chunks.push(chunk)
+  }
+  const prepared = await product.adapter.prepareCall(options.provider, options.model, options.signal)
+  for await (const chunk of prepared.stream(options)) chunks.push(chunk)
   return chunks
 }
 
@@ -248,6 +264,7 @@ test('HTTP 200 SSE terminal error shapes relay account-scoped failures', async t
     { type: 'response.failed', response: { status: 'failed', error: { code: 'usage_limit_reached', message: 'usage_limit_reached resets_in_seconds: 120' } } },
     { type: 'response.failed', response: { status: 'failed', error: { code: 'invalid_token', message: 'invalidated oauth token' } } },
     { type: 'response.failed', response: { status: 'failed', error: { code: 'model_not_found', message: 'model gpt-5.6-luna is not available for this account' } } },
+    { type: 'response.failed', response: { status: 'failed', error: { code: 'timeout', message: 'WebSocket response idle timeout' } } },
     { type: 'error', code: 'rate_limit_exceeded', message: 'rate limit exceeded' },
   ]
   for (let index = 0; index < failures.length; index++) await t.test(`SSE shape ${index}`, async subtest => {
@@ -259,6 +276,37 @@ test('HTTP 200 SSE terminal error shapes relay account-scoped failures', async t
     const chunks = await run(product)
     assert.equal(chunks.find(chunk => chunk.type === 'text-delta')?.text, 'ok-b', JSON.stringify(chunks))
   })
+})
+
+test('five-hour and weekly quota exhaustion cool only A for the requested model', async t => {
+  for (const [label, seconds] of [['five-hour', 3600], ['weekly', 604800]]) await t.test(label, async subtest => {
+    const scenario = { requests: [], respond: account => account === 'a' ? {
+      status: 429, code: 'usage_limit_reached', message: `usage_limit_reached ${label}`, resetsInSeconds: seconds,
+    } : {} }
+    const product = await fixture(subtest, scenario)
+    const accounts = await addAccounts(product)
+    const chunks = await run(product)
+    assert.equal(chunks.find(chunk => chunk.type === 'text-delta')?.text, 'ok-b')
+    const state = (await product.rpc('scheduler/status')).runtime.cooldowns
+    assert.equal(state.length, 1)
+    assert.equal(state[0].id, accounts.find(item => item.label === 'a').id)
+    assert.equal(state[0].model, 'gpt-5.6-luna')
+    assert.ok(state[0].remainingMs > (seconds - 2) * 1000, JSON.stringify({ state, chunks }))
+  })
+})
+
+test('HTTP 200 response.failed keeps structured weekly reset timing through pi-ai', async t => {
+  const scenario = { requests: [], respond: account => account === 'a' ? { events: [
+    { type: 'response.created', response: { id: 'weekly' } },
+    { type: 'response.failed', response: { id: 'weekly', status: 'failed', error: { type: 'usage_limit_reached', code: 'usage_limit_reached', message: 'usage limit reached', resets_in_seconds: 604800 } } },
+  ] } : {} }
+  const product = await fixture(t, scenario)
+  await addAccounts(product)
+  const chunks = await run(product)
+  assert.equal(chunks.find(chunk => chunk.type === 'text-delta')?.text, 'ok-b')
+  const state = (await product.rpc('scheduler/status')).runtime.cooldowns
+  assert.equal(state.length, 1)
+  assert.ok(state[0].remainingMs > 604_798_000, JSON.stringify(state))
 })
 
 test('failed OAuth refresh for A relays the same request to B', async t => {
@@ -275,6 +323,24 @@ test('failed OAuth refresh for A relays the same request to B', async t => {
   assert.equal(chunks.find(chunk => chunk.type === 'text-delta')?.text, 'ok-b', JSON.stringify(chunks))
   assert.ok(scenario.requests.some(item => item.path.endsWith('/oauth/token')))
   assert.deepEqual(scenario.requests.filter(item => item.path.includes('/responses')).map(item => item.account), ['b'])
+})
+
+test('concurrent turns share one A token refresh and all keep their task requests', async t => {
+  let refreshes = 0
+  const scenario = { requests: [], respond: () => ({}), async authRespond() {
+    refreshes++
+    return { status: 200, body: { access_token: jwt('a'), refresh_token: 'rotated-a', expires_in: 3600 } }
+  } }
+  const product = await fixture(t, scenario)
+  await addAccounts(product)
+  const entry = [...product.records].find(([, record]) => record?.payload?.accounts)
+  const [key, raw] = entry, record = structuredClone(raw)
+  record.payload.accounts.find(account => account.label === 'a').credential.expires = Date.now() - 60_000
+  product.records.set(key, record)
+  const turns = await Promise.all(Array.from({ length: 8 }, (_, index) => run(product, `refresh-parallel-${index}`)))
+  assert.equal(refreshes, 1)
+  assert.equal(turns.filter(chunks => chunks.at(-1)?.reason?.kind === 'stop').length, 8)
+  assert.equal(scenario.requests.filter(item => item.path.includes('/responses')).length, 8)
 })
 
 test('twelve concurrent sessions retain request identity while one shared account fails', async t => {
@@ -402,6 +468,24 @@ test('upstream model substitution is rejected before output and relays to the re
   assert.deepEqual(scenario.requests.filter(item => item.path.includes('/responses')).map(item => item.account), ['a', 'b'])
 })
 
+test('requested Astra and Sol are never silently downgraded during failover', async t => {
+  for (const [requested, wrong] of [['gpt-6-astra', 'gpt-6-sol'], ['gpt-5.6-sol', 'gpt-5.6-luna']]) await t.test(requested, async subtest => {
+    const scenario = { requests: [], models: [requested, 'gpt-5.6-luna'].map(slug => ({
+      slug, display_name: slug, visibility: 'list', context_window: 272000,
+      supported_reasoning_levels: ['low', 'medium', 'high'].map(effort => ({ effort })),
+    })), respond: account => ({ events: completed(account, account === 'a' ? wrong : requested) }) }
+    const product = await fixture(subtest, scenario)
+    await addAccounts(product)
+    await product.adapter.resolveModel('openai-codex', requested)
+    const chunks = await run(product, `model-${requested}`, { model: requested })
+    assert.equal(chunks.at(-1)?.reason?.kind, 'stop')
+    assert.deepEqual(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text), ['ok-b'], JSON.stringify({ chunks, requests: scenario.requests.filter(item => item.path.includes('/responses')) }))
+    const wires = scenario.requests.filter(item => item.path.includes('/responses'))
+    assert.deepEqual(wires.map(item => item.account), ['a', 'b'])
+    assert.deepEqual(wires.map(item => item.body.model), [requested, requested])
+  })
+})
+
 test('a short provider-wide overload retries the same task after the first account round', async t => {
   const scenario = { requests: [], respond: (_account, requestNumber) => requestNumber <= 2 ? { status: 503 } : {} }
   const product = await fixture(t, scenario)
@@ -455,6 +539,21 @@ test('connection reset before headers and after the first token both relay', asy
     const chunks = await run(product)
     assert.deepEqual(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text), ['ok-b'], JSON.stringify(chunks))
   })
+})
+
+test('real adapter request path relays typed DNS, TLS, connect, EOF and idle transport faults', async t => {
+  for (const code of ['ENOTFOUND', 'EAI_AGAIN', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_SOCKET', 'EOF']) {
+    await t.test(code, async subtest => {
+      const scenario = { requests: [], respond: () => ({}), transportFault: (target, account) =>
+        target.pathname.endsWith('/responses') && account === 'a' ? { code } : undefined }
+      const product = await fixture(subtest, scenario)
+      await addAccounts(product)
+      const chunks = await run(product)
+      assert.equal(chunks.find(chunk => chunk.type === 'text-delta')?.text, 'ok-b', JSON.stringify(chunks))
+      assert.deepEqual(scenario.transportAttempts.map(item => item.account), ['a'])
+      assert.deepEqual(scenario.requests.filter(item => item.path.includes('/responses')).map(item => item.account), ['b'])
+    })
+  }
 })
 
 test('UI RPC weight, priority, enable switch and affinity control real request distribution', async t => {

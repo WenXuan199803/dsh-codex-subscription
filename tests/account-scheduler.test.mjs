@@ -42,6 +42,7 @@ test('DNS, TLS, connect, reset, EOF and idle failures are transport-scoped', () 
     assert.equal(classified.retryable, true, code)
     assert.equal(classified.scope, 'transport', code)
   }
+  assert.equal(classifyFailure({ code: 'PI_AI_ERROR', message: 'WebSocket response idle timeout' }).scope, 'transport')
 })
 
 test('model resolution waits for the catalog after a bulk import', async () => {

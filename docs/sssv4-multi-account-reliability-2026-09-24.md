@@ -2,21 +2,21 @@
 
 基线：`e72c4d1d76ac82c63e0b02c3f1fbb1857282fb73`，插件 `2.1.33`。本专项使用假 OAuth 账号、本地 HTTP/SSE 服务器、可控 WebSocket、DSH `ToolRuntime` 和插件真实 `apply` 注册入口；没有消耗真实账号额度。测试与实现位于本仓库，运行状态须另按尚书省正式入口验收。
 
-最后一次完整 `pnpm check`：685 项测试，659 通过、0 失败、26 项按平台条件跳过；服务端/client 构建及 `2.1.34` 发行包打包通过。该数字代表插件仓库测试，不代表正式 DSH 已加载该版。
+最后一次完整 `pnpm check`：704 项测试，678 通过、0 失败、26 项按平台条件跳过；服务端/client 构建及 `2.1.34` 发行包打包通过。该数字代表插件仓库测试，不代表正式 DSH 已加载该版。
 
 ## 原始 14 项验收索引
 
 | 项目 | 当前证据 | 范围 |
 |---|---|---|
 | 1 调度设置 | RPC 持久化、重建插件、40 次权重分布、优先级/启停/affinity/fixed 的真实请求 | 模拟产品入口已验；浏览器与正式 Runtime 待验 |
-| 2–3 错误和载体 | HTTP 状态矩阵、HTTP 200 SSE `error`/`response.failed`、WS 帧、断流、OAuth 刷新 | DNS/TLS/idle 以类型与本地传输注入为主 |
+| 2–3 错误和载体 | HTTP 状态矩阵、HTTP 200 SSE `error`/`response.failed`、WS 帧、断流、OAuth 刷新、真实 adapter 请求路径的 DNS/TLS/connect/EOF/timeout 注入 | 这些网络错误由本地假传输产生，不消耗真实账号 |
 | 4–6 流边界与提交 | 逐个 SSE 边界故障注入、完整 finish 后提交、只读工具独立恢复 | 上游服务端工具副作用仍须另外证明 |
 | 7 请求一致性 | A/B 真请求体 canonical diff：模型、effort、prompt、工具 schema、图片、历史 | WS 私有 cache key 单独隔离 |
 | 8 私有续接状态 | A compaction/加密 reasoning 从 B 消失；WS A 用 previous_response，B 用完整历史 | 无上游模型字段时无法证明真实模型 |
 | 9 长任务 | 十轮步骤，第 2/5/8 步换号；有效工具完成与副作用各一次 | 模型语义质量在假上游只能做确定性脚本断言 |
-| 10 模型完整性 | SSE/WS、图片的错模检测与继续尝试 | 上游不报告模型时证据缺失 |
+| 10 模型完整性 | Astra/Sol 指定模型及 SSE/WS、图片的错模检测与继续尝试 | 上游不报告模型时证据缺失 |
 | 11 调用面 | 主对话/prepareCall、搜索、图片、compaction、native subagent 启动认证 | native child 运行中尚未无损接力 |
-| 12 并发动态池 | 12 会话、运行中导入/停用、刷新序列化既有测试、多账号冷却与过载恢复 | 正式 Runtime 的高并发压测待验 |
+| 12 并发动态池 | 12 会话、运行中导入/停用、8 个并发 turn 只刷新一次 OAuth token、多账号冷却与过载恢复 | 正式 Runtime 的高并发压测待验 |
 | 13 Chaos | 固定种子 100 轮，至少一可用账号时终止数 0 | 故障族仍有限，不能证明无限状态空间 |
 | 14 全池失败/诊断 | 耗尽后终局链；正常接力进独立诊断事件 | 任意外部副作用尚无通用自动对账 |
 
@@ -63,7 +63,7 @@ flowchart TD
 ## 缺陷、根因与修复
 
 1. 空 `block-start` 与内部 reasoning 过早提交，HTTP 200 流内失败无法接力。回归测试先在旧实现失败；现在完整模型响应未成功前不向 DSH 提交文本或工具调用。正文中途、工具参数构造中故障也可安全重试，但首字可见时间变晚。
-2. 503/传输错误按账号冷却，模型 quota 又按整个账号冷却。改为范围分类：额度/权限按账号+模型，认证按账号，Provider/传输暂态不冷却具体账号。增加有限跨轮恢复。
+2. 503/传输错误按账号冷却，模型 quota 又按整个账号冷却。改为范围分类：额度/权限按账号+模型，认证按账号，Provider/传输暂态不冷却具体账号。增加有限跨轮恢复。pi-ai 对 429 会把上游的结构化 `resets_in_seconds` 换成友好错误文案；HTTP 错误与 HTTP 200 `response.failed` 现在都把重置时间保留到调度冷却，五小时与周额度各有实际插件入口测试。
 3. HTTP 200 的 `Selected model is at capacity` 经 pi-ai 归一化后是普通错误，旧逻辑停止。现识别为 Provider 容量故障并接力。
 4. 返回模型与请求模型不同时旧逻辑照常接受。SSE 与 WebSocket 在有效输出前检查上游 `response.model`；图片工具也在保存前检查报告模型。模型字段缺席时不能凭空证明真实模型。
 5. 云端 compaction 曾包在调度器外层，A 的加密 checkpoint 可进入 B 请求。现于每次选定账号后再处理 compaction。pi-ai replayState 加账号作用域，换号保留可读历史并剥离上个账号的 response id、签名和加密 reasoning。旧无作用域 replayState 保守降级为完整历史。WebSocket 另有实际帧测试：A 第二次请求使用 `previous_response_id` 优化，换 B 后该字段消失且发送完整历史。
