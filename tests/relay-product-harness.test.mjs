@@ -6,11 +6,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 
-import { apply } from '../src/index.js'
 import { isSafeShellQuery } from '../src/tool-step-recovery.js'
+
+const { apply } = await import(process.env.CODEX_TEST_PLUGIN_ENTRY
+  ? pathToFileURL(process.env.CODEX_TEST_PLUGIN_ENTRY).href
+  : '../src/index.js')
 
 const jwt = id => `e30.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: id } })).toString('base64url')}.fixture`
 const event = value => `data: ${JSON.stringify(value)}\n\n`
