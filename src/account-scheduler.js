@@ -253,15 +253,18 @@ export async function runScheduledAccountOperation({ scheduler, store, sessionId
   const accounts = await scheduler.accounts()
   if (accounts.length === 0) throw new LlmError('没有可用的 Codex 账号', 'CODEX_ACCOUNT_POOL_UNAVAILABLE')
   const excluded = new Set(), attempts = []
-  let lastError, round = 0
-  while (round < 3) {
+  let lastError, round = 0, transientInRound = false
+  const deadline = Date.now() + 30_000
+  while (true) {
     signal?.throwIfAborted()
     const currentAccounts = await scheduler.accounts()
     if (!currentAccounts.some(account => account.enabled !== false && !excluded.has(account.id))) {
-      if (round >= 2 || !attempts.some(item => ['transport', 'provider'].includes(item.scope))) break
+      const delay = Math.min(3_000, 150 * 2 ** Math.min(round, 5))
+      if (!transientInRound || Date.now() + delay > deadline) break
       round++
-      await waitForRetry(round * 150, signal)
+      await waitForRetry(delay, signal)
       excluded.clear()
+      transientInRound = false
     }
     const account = await scheduler.choose(sessionId, excluded, model)
     if (!account) break
@@ -275,6 +278,7 @@ export async function runScheduledAccountOperation({ scheduler, store, sessionId
       const classified = scheduler.markFailure(account.id, failureFromError(error), model)
       if (!classified.retryable) throw error
       attempts.push({ label: account.label, reason: classified.reason, scope: classified.scope })
+      transientInRound ||= ['transport', 'provider'].includes(classified.scope)
       lastError = error
     }
   }
@@ -343,15 +347,18 @@ export class ScheduledCodexAdapter extends LlmAdapter {
     const attempts = []
     let lastFailureChunk
     let lastError
-    let round = 0
-    while (round < 3) {
+    let round = 0, transientInRound = false
+    const deadline = Date.now() + 30_000
+    while (true) {
       options.signal?.throwIfAborted()
       const currentAccounts = await this.scheduler.accounts()
       if (!currentAccounts.some(account => account.enabled !== false && !excluded.has(account.id))) {
-        if (round >= 2 || !attempts.some(item => ['transport', 'provider'].includes(item.scope))) break
+        const delay = Math.min(3_000, 150 * 2 ** Math.min(round, 5))
+        if (!transientInRound || Date.now() + delay > deadline) break
         round++
-        await waitForRetry(round * 150, options.signal)
+        await waitForRetry(delay, options.signal)
         excluded.clear()
+        transientInRound = false
       }
       const account = await this.scheduler.choose(options.sessionId, excluded, options.model)
       if (!account) break
@@ -370,6 +377,7 @@ export class ScheduledCodexAdapter extends LlmAdapter {
               return
             }
             attempts.push({ label: account.label, reason: classified.reason, scope: classified.scope })
+            transientInRound ||= ['transport', 'provider'].includes(classified.scope)
             lastFailureChunk = chunk
             failed = true
             break
@@ -389,6 +397,7 @@ export class ScheduledCodexAdapter extends LlmAdapter {
         const failure = { code: 'CODEX_STREAM_INCOMPLETE', message: 'Codex stream ended before finish' }
         const classified = this.scheduler.markFailure(account.id, failure, options.model)
         attempts.push({ label: account.label, reason: classified.reason, scope: classified.scope })
+        transientInRound ||= ['transport', 'provider'].includes(classified.scope)
         lastError = new LlmError(failure.message, failure.code)
       } catch (error) {
         if (options.signal?.aborted) throw error
@@ -400,6 +409,7 @@ export class ScheduledCodexAdapter extends LlmAdapter {
         const classified = this.scheduler.markFailure(account.id, failure, options.model)
         if (!classified.retryable) throw error
         attempts.push({ label: account.label, reason: classified.reason, scope: classified.scope })
+        transientInRound ||= ['transport', 'provider'].includes(classified.scope)
         lastError = error
       }
     }

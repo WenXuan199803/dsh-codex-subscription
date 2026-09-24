@@ -496,6 +496,15 @@ test('a short provider-wide overload retries the same task after the first accou
   assert.equal(scenario.requests.filter(item => item.path.includes('/responses')).length, 3)
 })
 
+test('a provider outage spanning three credential rounds recovers without a new user message', async t => {
+  const scenario = { requests: [], respond: (_account, requestNumber) => requestNumber <= 8 ? { status: 503 } : {} }
+  const product = await fixture(t, scenario)
+  await addAccounts(product)
+  const chunks = await run(product)
+  assert.equal(chunks.at(-1)?.reason?.kind, 'stop', JSON.stringify(chunks))
+  assert.equal(scenario.requests.filter(item => item.path.includes('/responses')).length, 9)
+})
+
 test('HTTP account and transient failure matrix relays without changing the request', async t => {
   const cases = [
     ...[401, 403, 408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526]
