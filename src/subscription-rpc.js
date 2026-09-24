@@ -7,7 +7,7 @@ const publicError = (code, message) => ({
   error: { code, message, details: { issues: [] } },
 })
 
-export function createSubscriptionRpcHandler({ authHandler, usageReader, accountUsageService, resetCreditService, preferences, runtimeManagement, diagnosticsReader, modelCatalog, originalImages, resolveInheritedOriginal, closeConnections }) {
+export function createSubscriptionRpcHandler({ authHandler, usageReader, accountUsageService, quotaActivator, resetCreditService, preferences, runtimeManagement, diagnosticsReader, modelCatalog, originalImages, resolveInheritedOriginal, closeConnections }) {
   return async (endpoint, payload, signal) => {
     if (['runtime/status', 'runtime/install', 'runtime/remove', 'runtime/cancel'].includes(endpoint)) {
       try {
@@ -198,6 +198,10 @@ export function createSubscriptionRpcHandler({ authHandler, usageReader, account
       void modelCatalog?.refresh({ signal: undefined }).catch(() => {})
     } else if (result.ok === true && (endpoint === 'status' || result.value?.authenticated === true)) {
       void modelCatalog?.refresh({ signal: undefined }).catch(() => {})
+    }
+    if (result.ok === true && (['logout', 'account/remove', 'account/import', 'account/configure'].includes(endpoint)
+      || (endpoint === 'login/status' && result.value?.authenticated === true))) {
+      void quotaActivator?.sync?.().catch(() => {})
     }
     return result
   }

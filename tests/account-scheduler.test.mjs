@@ -232,3 +232,26 @@ test('scheduled adapter hides a pre-output failure and continues on the next acc
   for await (const _ of adapter.stream({ provider: 'openai-codex', model: 'gpt-test', messages: [], sessionId: 'session-1' })) {}
   assert.deepEqual(selected, ['b'], 'the session remains pinned to the replacement account')
 })
+
+
+test('quota-balanced keeps priority semantics and picks the highest cached weekly pressure', async () => {
+  const pressures = new Map([['a', 0.5], ['b', 3], ['c', 1]])
+  const balancedVault = vault({ strategy: 'quota-balanced', sessionAffinity: false })
+  const scheduler = new CodexAccountScheduler(balancedVault, { resolveQuotaPressure: id => pressures.get(id) })
+  assert.equal((await scheduler.choose()).id, 'b')
+  pressures.set('a', 4)
+  assert.equal((await scheduler.choose()).id, 'a')
+  const originalList = balancedVault.list
+  balancedVault.list = async () => (await originalList()).map(account => ({
+    ...account, priority: account.id === 'c' ? 10 : 0,
+  }))
+  assert.equal((await scheduler.choose()).id, 'c', 'priority remains above quota pressure')
+})
+
+test('quota-balanced falls back to stable account order when cached pressure is incomplete', async () => {
+  const scheduler = new CodexAccountScheduler(vault({ strategy: 'quota-balanced', sessionAffinity: false }), {
+    resolveQuotaPressure: id => id === 'a' ? 2 : undefined,
+  })
+  assert.equal((await scheduler.choose()).id, 'a')
+  assert.equal((await scheduler.choose()).id, 'a')
+})

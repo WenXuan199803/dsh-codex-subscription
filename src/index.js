@@ -34,7 +34,8 @@ import { createSubscriptionDiagnostics } from './diagnostics.js'
 import { CodexAccountScheduler, ScheduledCodexAdapter, runScheduledAccountOperation } from './account-scheduler.js'
 import { registerToolStepRecovery } from './tool-step-recovery.js'
 import { createAccountUsageService } from './account-usage.js'
-import { CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeQuickQuotaMode, normalizeOutputVerbosity, normalizeSchedulerStrategy, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, SCHEDULER_STRATEGY_FIELD, SCHEDULER_SESSION_AFFINITY_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
+import { completeMinimalQuotaActivation, createQuotaActivationService } from './quota-activation.js'
+import { ACCOUNT_ROLLING_ACTIVATION_FIELD, CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_ACCOUNT_ROLLING_ACTIVATION, DEFAULT_CUSTOM_CONTEXT_WINDOW, DEFAULT_SCHEDULER_SESSION_AFFINITY, DEFAULT_SCHEDULER_STRATEGY, LEGACY_QUICK_QUOTA_FIELD, normalizeQuickQuotaMode, normalizeOutputVerbosity, normalizeSchedulerStrategy, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, SCHEDULER_STRATEGY_FIELD, SCHEDULER_SESSION_AFFINITY_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
 import { createCodexUsageReader } from './usage.js'
 import { createQuotaForecastReader } from './quota-forecast.js'
 import { QuotaForecastStateStore } from './quota-forecast-store.js'
@@ -100,6 +101,9 @@ const settingsFields = {
   ...Object.fromEntries(QUOTA_THRESHOLD_FIELDS.map(key => [key, z.number().step(1).min(1).max(100).default(20)])),
   [QUOTA_ALERTS_FIELD]: z.union(QUOTA_ALERT_MODES).default('important'),
   [LEGACY_QUICK_QUOTA_FIELD]: z.boolean(),
+  [SCHEDULER_STRATEGY_FIELD]: z.union(['fill-first', 'round-robin', 'weighted-round-robin', 'quota-balanced']).default(DEFAULT_SCHEDULER_STRATEGY),
+  [SCHEDULER_SESSION_AFFINITY_FIELD]: z.boolean().default(DEFAULT_SCHEDULER_SESSION_AFFINITY),
+  [ACCOUNT_ROLLING_ACTIVATION_FIELD]: z.boolean().default(DEFAULT_ACCOUNT_ROLLING_ACTIVATION),
   [CUSTOM_CONTEXT_WINDOW_FIELD]: z.number().step(1).min(128_000).max(1_000_000).default(DEFAULT_CUSTOM_CONTEXT_WINDOW),
   ...Object.fromEntries(Object.entries(CUSTOM_CONTEXT_MODEL_FIELDS).map(([modelKey, field]) => [field, z.number().step(1).min(128_000).max(CUSTOM_CONTEXT_MODEL_CAPS[modelKey]).default(CUSTOM_CONTEXT_MODEL_DEFAULTS[modelKey])])),
 }
@@ -125,16 +129,23 @@ export function apply(ctx, config = {}) {
     expirySkewMs: OAUTH_EXPIRY_SKEW_MS,
     vault: accountVault,
   })
+  let accountUsageService
   const schedulerConfig = async () => {
     const accountScheduler = await accountVault?.scheduler?.() ?? {}
     return {
       strategy: normalizeSchedulerStrategy(settings.get()[SCHEDULER_STRATEGY_FIELD]),
       sessionAffinity: settings.get()[SCHEDULER_SESSION_AFFINITY_FIELD] !== false,
+      rollingActivation: settings.get()[ACCOUNT_ROLLING_ACTIVATION_FIELD] !== false,
       ...(accountScheduler.fixedAccountId === undefined ? {} : { fixedAccountId: accountScheduler.fixedAccountId }),
     }
   }
   const scheduler = accountVault === undefined ? undefined : new CodexAccountScheduler(accountVault, {
     resolveConfig: schedulerConfig,
+    resolveQuotaPressure: (id, at) => accountUsageService?.pressure(id, at),
+    onSuccess: async id => {
+      if ((await schedulerConfig()).strategy !== 'quota-balanced') return
+      await accountUsageService?.refresh(id, { force: true })
+    },
   })
   const baseProvider = openaiCodexProvider()
   let resolveAuth = async () => undefined
@@ -398,6 +409,7 @@ export function apply(ctx, config = {}) {
       const settingsPatch = {
         ...(patch.strategy === undefined ? {} : { [SCHEDULER_STRATEGY_FIELD]: patch.strategy }),
         ...(patch.sessionAffinity === undefined ? {} : { [SCHEDULER_SESSION_AFFINITY_FIELD]: patch.sessionAffinity }),
+        ...(patch.rollingActivation === undefined ? {} : { [ACCOUNT_ROLLING_ACTIVATION_FIELD]: patch.rollingActivation }),
       }
       if (Object.keys(settingsPatch).length > 0) await settings.update(settingsPatch)
     },
@@ -407,7 +419,7 @@ export function apply(ctx, config = {}) {
     readCredential: options => store.read(PROVIDER, options),
     fetch: (input, init) => network.fetch('quota', input, init),
   })
-  const accountUsageService = accountVault === undefined ? undefined : createAccountUsageService({
+  accountUsageService = accountVault === undefined ? undefined : createAccountUsageService({
     accountVault,
     store,
     createReader: id => createCodexUsageReader({
@@ -416,6 +428,47 @@ export function apply(ctx, config = {}) {
       fetch: (input, init) => network.fetch('quota', input, init),
     }),
   })
+  if (accountUsageService !== undefined && normalizeSchedulerStrategy(settings.get()[SCHEDULER_STRATEGY_FIELD]) === 'quota-balanced') {
+    void accountUsageService.readAll().catch(error => ctx.logger?.debug?.('could not warm Codex account quota pressure: %s', error.message))
+  }
+
+  const activationConnection = createSubscriptionConnection({ resolveMode: () => 'websocket' })
+  const activationProvider = openaiCodexSubscriptionProvider({
+    connection: activationConnection,
+    resolveSpeedMode: () => 'standard',
+    resolveOutputVerbosity: () => 'low',
+    resolveContextMode: () => 'standard',
+    catalog: modelCatalog,
+    runNetwork: network.run,
+  })
+  const activationModels = createModels({ credentials: store })
+  activationModels.setProvider(activationProvider)
+  const quotaActivator = accountVault === undefined ? undefined : createQuotaActivationService({
+    listAccounts: () => accountVault.list(),
+    readCredential: id => accountVault.read(id),
+    enabled: () => settings.get()[ACCOUNT_ROLLING_ACTIVATION_FIELD] !== false,
+    readUsage: id => accountUsageService?.refresh(id, { force: true }),
+    activate: id => store.withAccount(id, async () => {
+      await modelCatalog.ensure('gpt-6-luna')
+      const model = activationModels.getModel(PROVIDER, 'gpt-6-luna')
+      if (model === undefined) throw new Error('Codex Luna activation model is unavailable')
+      const result = await completeMinimalQuotaActivation(activationModels, model)
+      if (result.stopReason === 'error' || result.stopReason === 'aborted') throw new Error('Codex quota activation failed')
+      return result
+    }),
+    onError: (error, id) => ctx.logger?.debug?.('could not renew Plus 5h window for %s: %s', id, error instanceof Error ? error.message : String(error)),
+  })
+  ctx.effect(() => {
+    if (quotaActivator === undefined) return undefined
+    void quotaActivator.sync()
+    const unwatch = settings.watch(() => { void quotaActivator.sync() })
+    return () => {
+      unwatch()
+      quotaActivator.dispose()
+      activationConnection.dispose()
+    }
+  }, 'codex-subscription: Plus 5h rolling activation')
+
   const usageReader = createQuotaForecastReader({
     reader: baseUsageReader,
     enabled: () => normalizeQuickQuotaMode(settings.get()[QUICK_QUOTA_MODE_FIELD], settings.get()[LEGACY_QUICK_QUOTA_FIELD]) === QUICK_QUOTA_MODE_FORECAST,
@@ -464,6 +517,7 @@ export function apply(ctx, config = {}) {
     authHandler: createCodexRpcHandler(coordinator, { openExternal: openCodexAuthUrl }),
     usageReader,
     accountUsageService,
+    quotaActivator,
     resetCreditService,
     preferences,
     runtimeManagement,

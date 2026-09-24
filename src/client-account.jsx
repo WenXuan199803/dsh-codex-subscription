@@ -22,6 +22,15 @@ const quotaWindowLabel = seconds => {
   return seconds >= 86_400 && seconds % 86_400 === 0 ? `${seconds / 86_400}天` : `${Math.round(seconds / 360) / 10}h`
 }
 
+const weeklyQuotaPressure = snapshot => {
+  const windows = snapshot?.usage?.rateLimits?.find(item => item.id === 'codex')?.windows ?? []
+  const window = windows.find(item => item.windowSeconds >= 574_560 && item.windowSeconds <= 635_040)
+  if (window === undefined || !Number.isFinite(window.remainingPercent) || !Number.isSafeInteger(window.resetsAt)) return undefined
+  const hours = (window.resetsAt * 1_000 - Date.now()) / 3_600_000
+  if (!Number.isFinite(hours) || hours <= 0) return undefined
+  return window.remainingPercent / hours
+}
+
 const quotaResetLabel = resetsAt => {
   if (!Number.isSafeInteger(resetsAt)) return undefined
   const date = new Date(resetsAt * 1000)
@@ -63,7 +72,7 @@ export function AccountEmail({ candidate, fallback, t, emailVisible, onClick }) 
   >{emailVisible ? candidate.email : maskEmail(candidate.email)}</button>
 }
 
-function AccountSchedulingControls({ candidate, busy, emailVisible, onConfigure }) {
+function AccountSchedulingControls({ candidate, busy, emailVisible, onConfigure, quotaPressure }) {
   const priority = candidate.priority ?? 0
   const weight = candidate.weight ?? 1
   const [priorityDraft, setPriorityDraft] = useState(String(priority))
@@ -88,6 +97,9 @@ function AccountSchedulingControls({ candidate, busy, emailVisible, onConfigure 
       aria-label={`${accessibleName} 权重`} onChange={event => setWeightDraft(event.target.value)}
       onBlur={() => commit('weight', weightDraft, weight, 1, 100, setWeightDraft)}
       onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label>
+    <span title="周剩余额度 ÷ 距周重置时间">额度压力 {Number.isFinite(quotaPressure)
+      ? `${quotaPressure.toLocaleString(undefined, { maximumFractionDigits: 2 })}%/h`
+      : '—'}</span>
   </div>
 }
 
@@ -335,6 +347,7 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
           <option value="fill-first">依次用满</option>
           <option value="round-robin">轮询</option>
           <option value="weighted-round-robin">加权轮询</option>
+          <option value="quota-balanced">额度均衡</option>
         </select></label>
         <label>固定账号（测试） <select disabled={busy} value={scheduler.config?.fixedAccountId ?? ''} onChange={event => updateScheduler({ fixedAccountId: event.currentTarget.value || null })}>
           <option value="">关闭固定模式</option>
@@ -343,11 +356,16 @@ export function AccountCard({ rpc, t, account, setAccount, onSignedOut }) {
         <label><input type="checkbox" disabled={busy || scheduler.config?.fixedAccountId !== undefined} checked={scheduler.config?.sessionAffinity !== false} onChange={event => updateScheduler({ sessionAffinity: event.currentTarget.checked })} /> 同一对话固定账号</label>
         {scheduler.config?.fixedAccountId === undefined ? null : <span className="codexSubscriptionAccountQuota codexSubscriptionAccountQuotaMuted">固定模式：所有对话只使用所选账号，不轮询、不自动切号</span>}
       </div>
-      <p className="codexSubscriptionPreferenceHint">先选择优先级最高的已启用账号；同级账号再按所选策略调度。权重只用于加权轮询；同一对话固定账号时，轮询只影响新对话。</p>
+      <p className="codexSubscriptionPreferenceHint">先选择优先级最高的已启用账号；同级账号再按所选策略调度。权重只用于加权轮询；额度均衡按“周剩余额度 ÷ 距周重置时间”动态选择；同一对话固定账号时，只在首次分配时选择。</p>
+    </div> : null}
+    {signedIn && scheduler !== undefined ? <div className="codexSubscriptionFlow">
+      <label><input type="checkbox" disabled={busy} checked={scheduler.config?.rollingActivation !== false}
+        onChange={event => updateScheduler({ rollingActivation: event.currentTarget.checked })} /> Plus 5h 自动续活</label>
+      <p className="codexSubscriptionPreferenceHint">窗口到期后用独立零上下文的 Luna Low 极简请求续启下一轮 5h；不进入任何用户会话，也不继承 system/developer、工具或项目上下文。</p>
     </div> : null}
     {signedIn && failedAccounts.length > 0 ? <p className="codexSubscriptionError" role="status">{failedAccounts.length} 个账号额度不可读：{failedAccounts.map(candidate => candidate.email ? maskEmail(candidate.email) : candidate.label).join('、')}。这不代表订阅到期；请先刷新额度，持续失败时检查登录凭据。</p> : null}
     {signedIn && accountUsageError ? <p className="codexSubscriptionPreferenceHint" role="status">逐账号额度本次刷新未完成，仍显示上次成功结果；可以稍后重试。</p> : null}
-    {signedIn && accounts.length > 0 ? <div className="codexSubscriptionAccounts">{accounts.map(candidate => <div className="codexSubscriptionAccount" data-active={candidate.active} key={candidate.id}><div className="codexSubscriptionAccountCopy"><div className="codexSubscriptionAccountName"><AccountEmail candidate={candidate} fallback={candidate.label} t={t} emailVisible={emailVisibleForAccount} onClick={toggleEmail} /><span className="codexSubscriptionAccountState">{candidate.enabled === false ? '已停用' : '已启用'}</span></div><AccountQuota snapshot={visibleAccountUsage[candidate.id]} /><AccountSchedulingControls candidate={candidate} busy={busy || loginVisible} emailVisible={emailVisibleForAccount} onConfigure={configureAccount} /></div><div className="codexSubscriptionActions"><Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => configureAccount(candidate.id, { enabled: candidate.enabled === false })}>{candidate.enabled === false ? '启用' : '停用'}</Button>{candidate.active || candidate.enabled === false ? null : <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => selectAccount(candidate.id)}>{t('switchAccount')}</Button>}{accounts.length > 1 ? <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => removeAccount(candidate.id)}>{removeId === candidate.id ? t('removeConfirm') : t('removeAccount')}</Button> : null}{removeId === candidate.id ? <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoveId(undefined)}>{t('removeCancel')}</Button> : null}</div></div>)}</div> : null}
+    {signedIn && accounts.length > 0 ? <div className="codexSubscriptionAccounts">{accounts.map(candidate => <div className="codexSubscriptionAccount" data-active={candidate.active} key={candidate.id}><div className="codexSubscriptionAccountCopy"><div className="codexSubscriptionAccountName"><AccountEmail candidate={candidate} fallback={candidate.label} t={t} emailVisible={emailVisibleForAccount} onClick={toggleEmail} /><span className="codexSubscriptionAccountState">{candidate.enabled === false ? '已停用' : '已启用'}</span></div><AccountQuota snapshot={visibleAccountUsage[candidate.id]} /><AccountSchedulingControls candidate={candidate} busy={busy || loginVisible} emailVisible={emailVisibleForAccount} onConfigure={configureAccount} quotaPressure={weeklyQuotaPressure(visibleAccountUsage[candidate.id])} /></div><div className="codexSubscriptionActions"><Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => configureAccount(candidate.id, { enabled: candidate.enabled === false })}>{candidate.enabled === false ? '启用' : '停用'}</Button>{candidate.active || candidate.enabled === false ? null : <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => selectAccount(candidate.id)}>{t('switchAccount')}</Button>}{accounts.length > 1 ? <Button type="button" variant="outline" disabled={busy || loginVisible} onClick={() => removeAccount(candidate.id)}>{removeId === candidate.id ? t('removeConfirm') : t('removeAccount')}</Button> : null}{removeId === candidate.id ? <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoveId(undefined)}>{t('removeCancel')}</Button> : null}</div></div>)}</div> : null}
     {signedIn && adding && flow === undefined ? <div className="codexSubscriptionFlow"><div className="codexSubscriptionActions"><Button type="button" variant="primary" disabled={busy} onClick={() => begin('browser')}>{t('browserLogin')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => begin('device_code')}>{t('deviceLogin')}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => setAdding(false)}>{t('cancel')}</Button></div></div> : null}
     {flow?.phase === 'waiting_device' ? <div className="codexSubscriptionFlow"><p>{t('deviceHint')}</p><code className="codexSubscriptionCode">{flow.deviceCode?.userCode}</code><a href={flow.deviceCode?.verificationUri} target="_blank" rel="noreferrer">{t('openLogin')}</a><p>{t('waiting')}</p><Button type="button" variant="outline" disabled={busy} onClick={cancel}>{t('cancel')}</Button></div> : null}
     {flow?.phase === 'waiting_input' ? <form className="codexSubscriptionFlow" onSubmit={submit}><p>{t('manualCode')}</p><Input className="codexSubscriptionInput" value={manualCode} onChange={event => setManualCode(event.currentTarget.value)} autoComplete="off" spellCheck={false} /><div className="codexSubscriptionActions"><Button type="submit" variant="primary" disabled={busy || manualCode.trim() === ''}>{t('submit')}</Button><Button type="button" variant="outline" disabled={busy} onClick={cancel}>{t('cancel')}</Button></div></form> : null}

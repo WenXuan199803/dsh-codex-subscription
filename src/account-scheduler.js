@@ -132,6 +132,8 @@ export class CodexAccountScheduler {
     this.vault = vault
     this.now = options.now ?? Date.now
     this.resolveConfig = options.resolveConfig
+    this.resolveQuotaPressure = options.resolveQuotaPressure
+    this.onSuccess = options.onSuccess
     this.cooldowns = new Map()
     this.bindings = new Map()
     this.cursor = 0
@@ -155,6 +157,10 @@ export class CodexAccountScheduler {
   markSuccess(id, model) {
     this.cooldowns.delete(id)
     if (model) this.cooldowns.delete(`${id}\u0000${model}`)
+    try {
+      const refresh = this.onSuccess?.(id, model)
+      if (refresh && typeof refresh.catch === 'function') void refresh.catch(() => {})
+    } catch { /* background quota refresh must never delay a model turn */ }
   }
 
   markFailure(id, failure, model) {
@@ -211,7 +217,19 @@ export class CodexAccountScheduler {
     const highest = Math.max(...enabled.map(account => account.priority ?? 0))
     const pool = enabled.filter(account => (account.priority ?? 0) === highest)
     let selected
-    if (config.strategy === 'round-robin') {
+    if (config.strategy === 'quota-balanced') {
+      let best
+      let complete = typeof this.resolveQuotaPressure === 'function'
+      if (complete) {
+        for (const account of pool) {
+          let pressure
+          try { pressure = this.resolveQuotaPressure(account.id, now) } catch { pressure = undefined }
+          if (!Number.isFinite(pressure)) { complete = false; break }
+          if (best === undefined || pressure > best.pressure) best = { account, pressure }
+        }
+      }
+      selected = complete && best !== undefined ? best.account : pool[0]
+    } else if (config.strategy === 'round-robin') {
       selected = pool[this.cursor % pool.length]
       this.cursor = (this.cursor + 1) % Number.MAX_SAFE_INTEGER
     } else if (config.strategy === 'weighted-round-robin') {

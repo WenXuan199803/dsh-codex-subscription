@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createAccountUsageService } from '../src/account-usage.js'
+import { createAccountUsageService, weeklyQuotaPressure } from '../src/account-usage.js'
 import { RPC_ENDPOINTS } from '../src/rpc-contract.js'
 
 test('per-account usage reads every account without changing active selection', async () => {
@@ -114,4 +114,27 @@ test('account pool excludes disabled accounts and weights independent windows by
   assert.equal(pool.windows['5h'].capacity, 6)
   assert.equal(pool.accounts.length, 2)
   assert.doesNotMatch(JSON.stringify(pool), /access|refresh|chatgpt_account_id/u)
+})
+
+
+test('weekly quota pressure is cached for hot-path scheduler reads without network work', async () => {
+  const resetAt = 1_900_000_000
+  const now = resetAt * 1000 - 20 * 60 * 60 * 1000
+  let reads = 0
+  const service = createAccountUsageService({
+    accountVault: { async list() { return [{ id: 'a', enabled: true }] } },
+    store: { withAccount(_id, operation) { return operation() } },
+    createReader: () => ({ async read() {
+      reads += 1
+      return { rateLimits: [{ id: 'codex', windows: [
+        { windowSeconds: 604_800, remainingPercent: 80, resetsAt },
+      ] }] }
+    } }),
+  })
+  assert.equal(service.pressure('a', now), undefined)
+  await service.refresh('a')
+  assert.equal(reads, 1)
+  assert.equal(service.pressure('a', now), 4)
+  assert.equal(reads, 1, 'pressure lookup must stay purely in-memory')
+  assert.equal(weeklyQuotaPressure(service.snapshot('a'), now), 4)
 })

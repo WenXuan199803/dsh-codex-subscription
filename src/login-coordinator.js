@@ -319,11 +319,14 @@ export class CodexLoginCoordinator {
 
   async updateScheduler(patch) {
     if (this.accountVault === undefined) throw new Error('Codex multi-account is unavailable')
-    if (patch.strategy !== undefined && !['fill-first', 'round-robin', 'weighted-round-robin'].includes(patch.strategy)) {
+    if (patch.strategy !== undefined && !['fill-first', 'round-robin', 'weighted-round-robin', 'quota-balanced'].includes(patch.strategy)) {
       throw new Error('Unsupported Codex scheduling strategy')
     }
     if (patch.sessionAffinity !== undefined && typeof patch.sessionAffinity !== 'boolean') {
       throw new Error('Invalid Codex scheduler affinity')
+    }
+    if (patch.rollingActivation !== undefined && typeof patch.rollingActivation !== 'boolean') {
+      throw new Error('Invalid Codex rolling activation setting')
     }
     if (Object.hasOwn(patch, 'fixedAccountId') && patch.fixedAccountId !== null
       && (typeof patch.fixedAccountId !== 'string' || patch.fixedAccountId.length === 0)) {
@@ -380,6 +383,7 @@ export function createCodexRpcHandler(coordinator, options = {}) {
       if (endpoint === 'scheduler/update') return ok(await coordinator.updateScheduler({
         ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
         ...(input.sessionAffinity === undefined ? {} : { sessionAffinity: input.sessionAffinity }),
+        ...(input.rollingActivation === undefined ? {} : { rollingActivation: input.rollingActivation }),
         ...(Object.hasOwn(input, 'fixedAccountId') ? { fixedAccountId: input.fixedAccountId } : {}),
       }))
       return badRequest(`unknown Codex auth endpoint: ${endpoint}`)

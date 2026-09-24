@@ -21,9 +21,12 @@ export const SCHEDULER_STRATEGY_FIELD = 'accountSchedulerStrategy'
 export const SCHEDULER_STRATEGY_FILL_FIRST = 'fill-first'
 export const SCHEDULER_STRATEGY_ROUND_ROBIN = 'round-robin'
 export const SCHEDULER_STRATEGY_WEIGHTED_ROUND_ROBIN = 'weighted-round-robin'
+export const SCHEDULER_STRATEGY_QUOTA_BALANCED = 'quota-balanced'
 export const DEFAULT_SCHEDULER_STRATEGY = SCHEDULER_STRATEGY_FILL_FIRST
 export const SCHEDULER_SESSION_AFFINITY_FIELD = 'accountSchedulerSessionAffinity'
 export const DEFAULT_SCHEDULER_SESSION_AFFINITY = true
+export const ACCOUNT_ROLLING_ACTIVATION_FIELD = 'accountRollingActivation'
+export const DEFAULT_ACCOUNT_ROLLING_ACTIVATION = true
 export const OUTPUT_VERBOSITY_FIELD = 'outputVerbosity'
 export const OUTPUT_VERBOSITY_DEFAULT = 'default'
 export const OUTPUT_VERBOSITY_LOW = 'low'
@@ -82,6 +85,7 @@ export const normalizeSchedulerStrategy = value => [
   SCHEDULER_STRATEGY_FILL_FIRST,
   SCHEDULER_STRATEGY_ROUND_ROBIN,
   SCHEDULER_STRATEGY_WEIGHTED_ROUND_ROBIN,
+  SCHEDULER_STRATEGY_QUOTA_BALANCED,
 ].includes(value) ? value : DEFAULT_SCHEDULER_STRATEGY
 
 export const normalizeContextMode = value => [CONTEXT_MODE_STANDARD, CONTEXT_MODE_EXTENDED, CONTEXT_MODE_CUSTOM].includes(value)

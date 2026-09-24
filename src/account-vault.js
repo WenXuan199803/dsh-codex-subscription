@@ -5,7 +5,7 @@ const DEFAULT_LABEL = 'Account 1'
 const clone = value => value === undefined ? undefined : structuredClone(value)
 const EMAIL_MAX_LENGTH = 254
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u
-const SCHEDULER_STRATEGIES = new Set(['fill-first', 'round-robin', 'weighted-round-robin'])
+const SCHEDULER_STRATEGIES = new Set(['fill-first', 'round-robin', 'weighted-round-robin', 'quota-balanced'])
 
 function normalizePriority(value) {
   return Number.isInteger(value) && value >= -1000 && value <= 1000 ? value : 0

@@ -1,3 +1,5 @@
+const WEEK_SECONDS = 604_800
+
 const PUBLIC_USAGE_ERRORS = new Set([
   'ChatGPT subscription is not signed in',
   'ChatGPT sign-in needs to be renewed',
@@ -40,6 +42,16 @@ function planWeight(access) {
   return undefined
 }
 
+export function weeklyQuotaPressure(usage, now = Date.now()) {
+  const windows = usage?.rateLimits?.find(limit => limit.id === 'codex')?.windows ?? []
+  const window = windows.find(item => Number.isFinite(item.windowSeconds)
+    && Math.abs(item.windowSeconds - WEEK_SECONDS) <= WEEK_SECONDS * 0.05)
+  if (window === undefined || !Number.isFinite(window.remainingPercent) || !Number.isSafeInteger(window.resetsAt)) return undefined
+  const hours = (window.resetsAt * 1_000 - now) / 3_600_000
+  if (!Number.isFinite(hours) || hours <= 0) return undefined
+  return window.remainingPercent / hours
+}
+
 function quotaWindow(usage, seconds) {
   const windows = usage?.rateLimits?.find(limit => limit.id === 'codex')?.windows ?? []
   const window = windows.find(item => Number.isFinite(item.windowSeconds)
@@ -63,6 +75,7 @@ function aggregateWindow(rows, kind) {
 
 export function createAccountUsageService({ accountVault, store, createReader }) {
   const readers = new Map()
+  const latest = new Map()
   const readerFor = id => {
     let reader = readers.get(id)
     if (reader === undefined) {
@@ -71,6 +84,15 @@ export function createAccountUsageService({ accountVault, store, createReader })
     }
     return reader
   }
+  const remember = (id, usage) => {
+    latest.set(id, structuredClone(usage))
+    return usage
+  }
+  const readAccount = (account, force, signal) => store.withAccount(
+    account.id,
+    () => readerFor(account.id).read({ force, signal }),
+  ).then(usage => remember(account.id, usage))
+
   return Object.freeze({
     async readAll({ force = false, signal } = {}) {
       const accounts = await accountVault?.list?.() ?? []
@@ -79,8 +101,8 @@ export function createAccountUsageService({ accountVault, store, createReader })
           return { id: account.id, disabled: true }
         }
         try {
-          const usage = await store.withAccount(account.id, () => readerFor(account.id).read({ force, signal }))
-          return { id: account.id, usage }
+          const usage = await readAccount(account, force, signal)
+          return { id: account.id, usage, quotaPressure: weeklyQuotaPressure(usage) }
         } catch (error) {
           if (signal?.aborted) throw error
           return { id: account.id, error: publicError(error) }
@@ -95,8 +117,8 @@ export function createAccountUsageService({ accountVault, store, createReader })
           const scopedCredential = await store.withAccount(account.id, () => store.read('openai-codex', { signal }))
           const weight = planWeight(scopedCredential?.access)
           if (weight === undefined) throw new Error('Unknown ChatGPT plan capacity')
-          const usage = await store.withAccount(account.id, () => readerFor(account.id).read({ force, signal }))
-          return { weight, windows: { '5h': quotaWindow(usage, 18_000), week: quotaWindow(usage, 604_800) } }
+          const usage = await readAccount(account, force, signal)
+          return { weight, windows: { '5h': quotaWindow(usage, 18_000), week: quotaWindow(usage, WEEK_SECONDS) } }
         } catch (error) {
           if (signal?.aborted) throw error
           return { error: publicError(error) }
@@ -110,14 +132,34 @@ export function createAccountUsageService({ accountVault, store, createReader })
         fetchedAt: Date.now(),
       }
     },
+    async refresh(id, { force = true, signal } = {}) {
+      const account = (await accountVault?.list?.() ?? []).find(candidate => candidate.id === id && candidate.enabled !== false)
+      if (account === undefined) return undefined
+      try {
+        const usage = await readAccount(account, force, signal)
+        return { id, usage, quotaPressure: weeklyQuotaPressure(usage) }
+      } catch (error) {
+        if (signal?.aborted) throw error
+        return { id, error: publicError(error) }
+      }
+    },
+    pressure(id, now = Date.now()) {
+      return weeklyQuotaPressure(latest.get(id), now)
+    },
+    snapshot(id) {
+      const usage = latest.get(id)
+      return usage === undefined ? undefined : structuredClone(usage)
+    },
     clear(id) {
       if (id === undefined) {
         for (const reader of readers.values()) reader.clear?.()
         readers.clear()
+        latest.clear()
         return
       }
       readers.get(id)?.clear?.()
       readers.delete(id)
+      latest.delete(id)
     },
   })
 }
