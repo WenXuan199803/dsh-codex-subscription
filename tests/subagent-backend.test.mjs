@@ -1,7 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createSubagentTokens } from '../src/subagent-auth.js'
-import { createSubagentBackendSwitcher, SUBAGENT_PROVIDER, subagentThreadPolicy } from '../src/subagent-backend.js'
+import { createSubscriptionSubagent, createSubagentBackendSwitcher, SUBAGENT_PROVIDER, subagentThreadPolicy } from '../src/subagent-backend.js'
+import { CodexAccountScheduler } from '../src/account-scheduler.js'
 
 test('subscription subagent pins account and serializes concurrent token rotation', async () => {
   let current = { type: 'oauth', accountId: 'a', access: 'old' }
@@ -18,6 +23,42 @@ test('subscription subagent pins account and serializes concurrent token rotatio
   current = { ...current, accountId: 'b' }
   await assert.rejects(tokens(), /authorization failed/)
   await assert.rejects(tokens('b'), /authorization failed/)
+})
+
+test('native subagent authentication chooses B when A fails before the child starts', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'codex-subagent-pool-'))
+  const scope = new AsyncLocalStorage(), selected = []
+  const store = {
+    withAccount: (id, operation) => scope.run(id, operation),
+    async read() { const id = scope.getStore(); return { type: 'oauth', accountId: id, access: `access-${id}` } },
+    async modify() { throw new Error('not needed') },
+  }
+  const scheduler = new CodexAccountScheduler({
+    async list() { return [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+    async scheduler() { return { strategy: 'fill-first', sessionAffinity: true } },
+    async activeId() { return 'a' },
+  })
+  const ctx = { sandboxPolicy: { resolve: () => ({ mode: 'read-only' }) } }
+  const instance = createSubscriptionSubagent({
+    ctx, nativeHome: home, scheduler, store,
+    async resolveAuth() {
+      selected.push(scope.getStore())
+      if (scope.getStore() === 'a') throw new Error('Codex subscription authorization failed')
+      return { auth: { apiKey: 'access-b' } }
+    },
+    async refresh() { throw new Error('not needed') },
+    async loadRuntime() { return { Transport: class {}, official: { apply(host) {
+      host.subagents.registerProvider({ async start() { return { result: Promise.resolve({ kind: 'completed' }), async dispose() {} } } })
+    } } } },
+  })
+  try {
+    const run = await instance.provider.start({
+      signal: new AbortController().signal,
+      parent: { session: { id: 'parent-session', requestHeader: () => ({ config: { provider: 'openai-codex', model: 'gpt-5.6-luna', reasoningEffort: 'high' } }) } },
+    })
+    assert.deepEqual(selected, ['a', 'b'])
+    assert.deepEqual(await run.result, { kind: 'completed' })
+  } finally { instance.dispose(); await rm(home, { recursive: true, force: true }) }
 })
 
 test('subagent policy takes parent model effort and sandbox, never user Codex defaults', () => {

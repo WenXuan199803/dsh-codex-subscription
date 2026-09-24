@@ -1,6 +1,10 @@
 import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 
-const RETRYABLE_STATUS = new Set([401, 403, 408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526])
+const TRANSPORT_CODES = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE',
+  'EOF', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET',
+  'ERR_STREAM_PREMATURE_CLOSE', 'CODEX_STREAM_INCOMPLETE',
+])
 
 function resetDelayFromMessage(message) {
   if (typeof message !== 'string') return undefined
@@ -23,35 +27,69 @@ function classifyFailure(failure = {}) {
   const status = Number(failure.status)
   const requested = Number(failure.providerRetryAfterMs)
   const retryAfterMs = Number.isFinite(requested) && requested > 0 ? requested : undefined
-  if (/usage_limit_reached|usage limit|insufficient_quota|quota exceeded|out of budget/iu.test(message)
+  if (['INVALID_REQUEST', 'INVALID_ARGUMENT', 'CONTENT_POLICY_VIOLATION', 'CYBER_POLICY',
+    'CONTEXT_LENGTH_EXCEEDED', 'CONTEXT_TOO_LARGE', 'UNSUPPORTED_PARAMETER'].includes(code)
+    || /context (?:window|length).{0,60}(?:exceed|too large)|too many tokens/iu.test(message)) {
+    return { retryable: false, scope: 'request', reason: 'error', cooldownMs: 0 }
+  }
+  if (/usage_limit_reached|usage limit|insufficient_quota|quota exceeded|out of budget|image generation quota is unavailable/iu.test(message)
     || ['USAGE_LIMIT_REACHED', 'QUOTA_EXHAUSTED', 'INSUFFICIENT_QUOTA'].includes(code)) {
-    return { retryable: true, reason: 'quota', cooldownMs: resetDelayFromMessage(message) ?? retryAfterMs ?? 15 * 60 * 1000 }
+    return { retryable: true, scope: 'model', reason: 'quota', cooldownMs: resetDelayFromMessage(message) ?? retryAfterMs ?? 15 * 60 * 1000 }
+  }
+  if (/OVERLOAD|CAPACITY/u.test(code) || /server_is_overloaded|selected model is at capacity|model_at_capacity/iu.test(message)) {
+    return { retryable: true, scope: 'provider', reason: 'transient', cooldownMs: retryAfterMs ?? 10 * 1000 }
   }
   if (status === 429 || code.includes('RATE_LIMIT')) {
-    return { retryable: true, reason: 'rate-limit', cooldownMs: retryAfterMs ?? 30 * 1000 }
-  }
-  if ([401, 403].includes(status) || /AUTH|UNAUTHORIZED|FORBIDDEN/.test(code)
-    || /invalidated oauth token|invalid(?:ated)? oauth access token/iu.test(message)) {
-    return { retryable: true, reason: 'auth', cooldownMs: 60 * 1000 }
+    return { retryable: true, scope: 'model', reason: 'rate-limit', cooldownMs: retryAfterMs ?? 30 * 1000 }
   }
   if (['MODEL_NOT_FOUND', 'MODEL_UNAVAILABLE', 'MODEL_ACCESS_DENIED'].includes(code)
+    || ['CODEX_MODEL_MISMATCH', 'CODEX_IMAGE_INCOMPLETE'].includes(code) || /upstream model mismatch/iu.test(message)
+    || /model.{0,100}(?:not available|not found|not supported|does not exist).{0,100}(?:this account|your account|credential)/iu.test(message)
+    || /(?:do not have access|don't have access).{0,100}model/iu.test(message)
     || ((status === 400 || status === 404)
       && /model.{0,80}(?:not found|not available|not supported|does not exist|do not have access)/iu.test(message))) {
-    return { retryable: true, reason: 'model-access', cooldownMs: 60 * 1000 }
+    return { retryable: true, scope: 'model', reason: 'model-access', cooldownMs: 60 * 1000 }
   }
-  if ([408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526].includes(status)
-    || /OVERLOAD|SERVICE_UNAVAILABLE|UPSTREAM|TIMEOUT|NETWORK|CONNECTION/.test(code)
-    || /overloaded|service unavailable|timed? out|ECONN|EPIPE|EOF|network/iu.test(message)) {
-    return { retryable: true, reason: 'transient', cooldownMs: retryAfterMs ?? 10 * 1000 }
+  if ([401, 403].includes(status) || /AUTH|UNAUTHORIZED|FORBIDDEN/.test(code)
+    || /invalidated oauth token|invalid(?:ated)? oauth access token|sign-in needs to be renewed|subscription authorization failed/iu.test(message)) {
+    return { retryable: true, scope: 'credential', reason: 'auth', cooldownMs: 60 * 1000 }
   }
-  return { retryable: RETRYABLE_STATUS.has(status), reason: 'error', cooldownMs: retryAfterMs ?? 10 * 1000 }
+  if ([408].includes(status) || TRANSPORT_CODES.has(code) || /^(?:CERT_|ERR_TLS_|ERR_SSL_)/u.test(code)
+    || /TIMEOUT|NETWORK|CONNECTION|TRANSPORT|SOCKET|STREAM_INCOMPLETE/u.test(code)
+    || /timed? out|ECONN|EPIPE|EOF|network/iu.test(message)) {
+    return { retryable: true, scope: 'transport', reason: 'transient', cooldownMs: retryAfterMs ?? 10 * 1000 }
+  }
+  if ([500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526].includes(status)
+    || /SERVICE_UNAVAILABLE|UPSTREAM/u.test(code)
+    || /service unavailable/iu.test(message)) {
+    return { retryable: true, scope: 'provider', reason: 'transient', cooldownMs: retryAfterMs ?? 10 * 1000 }
+  }
+  return { retryable: false, scope: 'request', reason: 'error', cooldownMs: 0 }
 }
 
-const isCommittedChunk = chunk => [
-  'block-start', 'block-end', 'text-delta', 'reasoning-delta', 'tool-call-delta',
-].includes(chunk?.type)
+function failureFromError(error) {
+  const message = error instanceof Error ? error.message : String(error)
+  const status = Number(error?.status) || Number(/\bHTTP (\d{3})\b/iu.exec(message)?.[1]) || undefined
+  const causes = []
+  for (let current = error; current && causes.length < 5; current = current.cause) causes.push(current)
+  const transport = causes.find(item => /^(?:UND_ERR_SOCKET|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|ERR_STREAM_PREMATURE_CLOSE)$/iu.test(String(item?.code ?? '')))
+  return {
+    code: String(transport?.code ?? error?.code ?? error?.cause?.code ?? ''),
+    message: `${message}${error?.cause?.message ? `; ${error.cause.message}` : ''}`,
+    ...(status ? { status } : {}),
+  }
+}
 
 const attemptSummary = attempts => attempts.map(item => `${item.label}: ${item.reason}`).join('；')
+
+function waitForRetry(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return }
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve() }, ms)
+    const abort = () => { clearTimeout(timer); reject(signal.reason) }
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+}
 
 function enhancedFailure(chunk, attempts) {
   if (chunk?.type !== 'finish' || !['error', 'aborted'].includes(chunk.reason?.kind) || attempts.length === 0) return chunk
@@ -68,6 +106,27 @@ function enhancedFailure(chunk, attempts) {
   }
 }
 
+function accountSafeOptions(options, accountId) {
+  if (!Array.isArray(options.messages)) return options
+  let changed = false
+  const messages = options.messages.map(message => {
+    const source = message?.source
+    if (!source?.replayState || source.replayState.codexAccountScope === accountId) return message
+    // Durable content is the task history. Encrypted reasoning, signatures,
+    // response ids and compaction checkpoints are private to the credential
+    // that produced them; legacy unscoped replay state is conservatively reset.
+    const { replayState: _privateState, ...safeSource } = source
+    changed = true
+    return { ...message, source: safeSource }
+  })
+  return changed ? { ...options, messages } : options
+}
+
+function tagReplayScope(chunk, accountId) {
+  if (chunk?.type !== 'finish' || !chunk.replayState) return chunk
+  return { ...chunk, replayState: { ...chunk.replayState, codexAccountScope: accountId } }
+}
+
 export class CodexAccountScheduler {
   constructor(vault, options = {}) {
     this.vault = vault
@@ -78,6 +137,7 @@ export class CodexAccountScheduler {
     this.cursor = 0
     this.weightCursor = 0
     this.fillCurrent = undefined
+    this.relayEvents = []
   }
 
   async config() {
@@ -92,17 +152,24 @@ export class CodexAccountScheduler {
     if (sessionId !== undefined) this.bindings.delete(String(sessionId))
   }
 
-  markSuccess(id) {
+  markSuccess(id, model) {
     this.cooldowns.delete(id)
+    if (model) this.cooldowns.delete(`${id}\u0000${model}`)
   }
 
-  markFailure(id, failure) {
+  markFailure(id, failure, model) {
     const classified = classifyFailure(failure)
+    this.relayEvents.push({ at: this.now(), id, ...(model ? { model } : {}), reason: classified.reason, scope: classified.scope })
+    if (this.relayEvents.length > 100) this.relayEvents.shift()
     if (!classified.retryable) return classified
-    this.cooldowns.set(id, {
-      until: this.now() + Math.max(1_000, Math.min(classified.cooldownMs, 7 * 24 * 60 * 60 * 1000)),
-      reason: classified.reason,
-    })
+    if (classified.scope === 'credential' || classified.scope === 'model') {
+      const key = classified.scope === 'model' && model ? `${id}\u0000${model}` : id
+      this.cooldowns.set(key, {
+        until: this.now() + Math.max(1_000, Math.min(classified.cooldownMs, 7 * 24 * 60 * 60 * 1000)),
+        reason: classified.reason,
+        ...(classified.scope === 'model' && model ? { model } : {}),
+      })
+    }
     if (this.fillCurrent === id) this.fillCurrent = undefined
     for (const [sessionId, accountId] of this.bindings) {
       if (accountId === id) this.bindings.delete(sessionId)
@@ -110,7 +177,7 @@ export class CodexAccountScheduler {
     return classified
   }
 
-  async choose(sessionId, excluded = new Set()) {
+  async choose(sessionId, excluded = new Set(), model) {
     const [accounts, config, activeId] = await Promise.all([
       this.accounts(),
       this.config(),
@@ -130,7 +197,8 @@ export class CodexAccountScheduler {
 
     const enabled = accounts.filter(account => account.enabled !== false
       && !excluded.has(account.id)
-      && !this.cooldowns.has(account.id))
+      && !this.cooldowns.has(account.id)
+      && !(model && this.cooldowns.has(`${account.id}\u0000${model}`)))
     if (enabled.length === 0) return undefined
 
     const key = sessionId === undefined ? undefined : String(sessionId)
@@ -169,13 +237,50 @@ export class CodexAccountScheduler {
     const now = this.now()
     return {
       bindings: this.bindings.size,
-      cooldowns: [...this.cooldowns].map(([id, state]) => ({
-        id,
+      cooldowns: [...this.cooldowns].map(([key, state]) => ({
+        id: key.split('\u0000')[0],
         reason: state.reason,
+        ...(state.model ? { model: state.model } : {}),
         remainingMs: Math.max(0, state.until - now),
       })),
+      relayEvents: this.relayEvents.slice(-20).map(event => ({ ...event })),
     }
   }
+}
+
+/** Execute non-LLM subscription calls through the same selected vault account. */
+export async function runScheduledAccountOperation({ scheduler, store, sessionId, model, signal, operation }) {
+  const accounts = await scheduler.accounts()
+  if (accounts.length === 0) throw new LlmError('没有可用的 Codex 账号', 'CODEX_ACCOUNT_POOL_UNAVAILABLE')
+  const excluded = new Set(), attempts = []
+  let lastError, round = 0
+  while (round < 3) {
+    signal?.throwIfAborted()
+    const currentAccounts = await scheduler.accounts()
+    if (!currentAccounts.some(account => account.enabled !== false && !excluded.has(account.id))) {
+      if (round >= 2 || !attempts.some(item => ['transport', 'provider'].includes(item.scope))) break
+      round++
+      await waitForRetry(round * 150, signal)
+      excluded.clear()
+    }
+    const account = await scheduler.choose(sessionId, excluded, model)
+    if (!account) break
+    excluded.add(account.id)
+    try {
+      const result = await store.withAccount(account.id, () => operation(account))
+      scheduler.markSuccess(account.id, model)
+      return result
+    } catch (error) {
+      if (signal?.aborted) throw error
+      const classified = scheduler.markFailure(account.id, failureFromError(error), model)
+      if (!classified.retryable) throw error
+      attempts.push({ label: account.label, reason: classified.reason, scope: classified.scope })
+      lastError = error
+    }
+  }
+  if (!lastError) throw new LlmError('没有可用的 Codex 账号', 'CODEX_ACCOUNT_POOL_UNAVAILABLE')
+  lastError.message = `${lastError.message}（账号接力：${attemptSummary(attempts)}）`
+  throw lastError
 }
 
 async function* scopedIterator(store, accountId, iterable) {
@@ -238,58 +343,63 @@ export class ScheduledCodexAdapter extends LlmAdapter {
     const attempts = []
     let lastFailureChunk
     let lastError
-    while (excluded.size < accounts.length) {
+    let round = 0
+    while (round < 3) {
       options.signal?.throwIfAborted()
-      const account = await this.scheduler.choose(options.sessionId, excluded)
+      const currentAccounts = await this.scheduler.accounts()
+      if (!currentAccounts.some(account => account.enabled !== false && !excluded.has(account.id))) {
+        if (round >= 2 || !attempts.some(item => ['transport', 'provider'].includes(item.scope))) break
+        round++
+        await waitForRetry(round * 150, options.signal)
+        excluded.clear()
+      }
+      const account = await this.scheduler.choose(options.sessionId, excluded, options.model)
       if (!account) break
       excluded.add(account.id)
-      let committed = false
       const staged = []
+      let failed = false
       try {
-        const iterable = this.store.withAccount(account.id, () => dispatch(options))
+        const iterable = this.store.withAccount(account.id, () => dispatch(accountSafeOptions(options, account.id)))
         for await (const chunk of scopedIterator(this.store, account.id, iterable)) {
           if (chunk?.type === 'finish' && ['error', 'aborted'].includes(chunk.reason?.kind)) {
-            if (options.signal?.aborted || committed) {
-              for (const item of staged) yield item
-              yield chunk
-              return
-            }
-            const classified = this.scheduler.markFailure(account.id, chunk.reason.failure)
+            if (options.signal?.aborted) throw options.signal.reason ?? new Error('Request aborted')
+            const classified = this.scheduler.markFailure(account.id, chunk.reason.failure, options.model)
             if (!classified.retryable) {
               for (const item of staged) yield item
               yield chunk
               return
             }
-            attempts.push({ label: account.label, reason: classified.reason })
+            attempts.push({ label: account.label, reason: classified.reason, scope: classified.scope })
             lastFailureChunk = chunk
+            failed = true
             break
           }
 
           staged.push(chunk)
-          if (!committed && isCommittedChunk(chunk)) {
-            committed = true
-            this.scheduler.markSuccess(account.id)
-            for (const item of staged.splice(0)) yield item
-          } else if (committed) {
-            yield staged.shift()
-          }
-
           if (chunk?.type === 'finish') {
-            this.scheduler.markSuccess(account.id)
-            for (const item of staged.splice(0)) yield item
+            this.scheduler.markSuccess(account.id, options.model)
+            // Delay DSH-visible text and tool calls until the upstream turn is
+            // complete. A stream that fails after its first token is otherwise
+            // impossible to replay without duplicated output or side effects.
+            for (const item of staged) yield tagReplayScope(item, account.id)
             return
           }
         }
+        if (failed) continue
+        const failure = { code: 'CODEX_STREAM_INCOMPLETE', message: 'Codex stream ended before finish' }
+        const classified = this.scheduler.markFailure(account.id, failure, options.model)
+        attempts.push({ label: account.label, reason: classified.reason, scope: classified.scope })
+        lastError = new LlmError(failure.message, failure.code)
       } catch (error) {
-        if (options.signal?.aborted || committed) throw error
+        if (options.signal?.aborted) throw error
         const failure = error?.failure ?? {
           code: String(error?.code ?? 'CODEX_TRANSPORT_ERROR'),
           message: error instanceof Error ? error.message : String(error),
           ...(Number.isInteger(error?.status) ? { status: error.status } : {}),
         }
-        const classified = this.scheduler.markFailure(account.id, failure)
+        const classified = this.scheduler.markFailure(account.id, failure, options.model)
         if (!classified.retryable) throw error
-        attempts.push({ label: account.label, reason: classified.reason })
+        attempts.push({ label: account.label, reason: classified.reason, scope: classified.scope })
         lastError = error
       }
     }

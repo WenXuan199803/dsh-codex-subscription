@@ -31,7 +31,8 @@ import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL } from './image-models.js'
 import { OriginalImageStore } from './image-original-store.js'
 import { inheritedOriginalImageRef } from './image-original-contract.js'
 import { createSubscriptionDiagnostics } from './diagnostics.js'
-import { CodexAccountScheduler, ScheduledCodexAdapter } from './account-scheduler.js'
+import { CodexAccountScheduler, ScheduledCodexAdapter, runScheduledAccountOperation } from './account-scheduler.js'
+import { registerToolStepRecovery } from './tool-step-recovery.js'
 import { createAccountUsageService } from './account-usage.js'
 import { CONTEXT_MODE_FIELD, contextModelGroups, CUSTOM_CONTEXT_MODEL_CAPS, CUSTOM_CONTEXT_MODEL_DEFAULTS, CUSTOM_CONTEXT_MODEL_FIELDS, CUSTOM_CONTEXT_WINDOW_FIELD, DEFAULT_CUSTOM_CONTEXT_WINDOW, LEGACY_QUICK_QUOTA_FIELD, normalizeQuickQuotaMode, normalizeOutputVerbosity, normalizeSchedulerStrategy, QUICK_QUOTA_MODE_FORECAST, QUICK_QUOTA_MODE_FIELD, OUTPUT_VERBOSITY_FIELD, SEARCH_PROVIDER_AUTO, SEARCH_PROVIDER_CODEX, SEARCH_PROVIDER_FIELD, SETTINGS_NAMESPACE, SPEED_MODE_FIELD, SCHEDULER_STRATEGY_FIELD, SCHEDULER_SESSION_AFFINITY_FIELD, normalizeContextMode, normalizeCustomContextWindow, supportsCodexFastMode } from './settings-contract.js'
 import { createCodexUsageReader } from './usage.js'
@@ -105,6 +106,7 @@ const settingsFields = {
 export const Config = z.object(Object.fromEntries(Object.entries(settingsFields).map(([key, field]) => [key, typeof field.volatile === 'function' ? field.volatile() : field])))
 
 export function apply(ctx, config = {}) {
+  registerToolStepRecovery(ctx)
   const settings = createSettingsAdapter(ctx, z.object(settingsFields), config, SETTINGS_NAMESPACE)
   const searchProvider = createSearchProviderSwitcher(ctx.loader)
   const network = createCodexNetworkTransport()
@@ -255,7 +257,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['subagents', 'subprocess', 'sandboxPolicy'], scoped => {
     const instance = createSubscriptionSubagent({
       ctx: scoped, nativeHome: dshHomePath('state', 'codex-subscription', 'native-subagent'),
-      resolveAuth, store,
+      resolveAuth, store, scheduler,
       refresh: credential => network.run('oauth', () => baseProvider.auth.oauth.refresh(credential)),
       loadRuntime: loadSubagentRuntime,
       maintenance: runtimeManagement.blocked,
@@ -296,7 +298,8 @@ export function apply(ctx, config = {}) {
       fileExists: async () => false,
     }),
   })
-  ctx.effect(() => watchImageTool(settings, () => ctx.tools.register(createCodexImageTool({
+  ctx.effect(() => watchImageTool(settings, () => {
+    const imageTool = createCodexImageTool({
     getFeatures: () => settings.get(),
     getAuth: resolveAuth,
     readCredential: options => store.read(PROVIDER, options),
@@ -304,7 +307,18 @@ export function apply(ctx, config = {}) {
     getSessionMessages: sessionId => ctx.get?.('sessions')?.get?.(sessionId)?.deriveMessages?.() ?? [],
     originalImages,
     fetch: (input, init) => network.fetch('image', input, init),
-  }))), 'codex-subscription: image tool availability')
+    })
+    const scheduledImageTool = scheduler === undefined ? imageTool : {
+      ...imageTool,
+      execute: (args, exec) => runScheduledAccountOperation({
+        scheduler, store, signal: exec.signal,
+        sessionId: exec.agent?.id,
+        model: args.model ?? settings.get().imageModel,
+        operation: () => imageTool.execute(args, exec),
+      }),
+    }
+    return ctx.tools.register(scheduledImageTool)
+  }), 'codex-subscription: image tool availability')
   const adapter = new PiAiAdapter({
     profiles,
     resolveApiKey: async () => {
@@ -322,10 +336,11 @@ export function apply(ctx, config = {}) {
     auth: adapterAuth,
     resolveAttachments: () => ctx.get?.('attachments'),
   })
-  const scheduledAdapter = scheduler === undefined ? adapter : new ScheduledCodexAdapter(adapter, scheduler, store, modelCatalog)
-  ctx.llm.registerAdapter([PROVIDER], compaction.wrapAdapter(scheduledAdapter))
+  const compactedAdapter = compaction.wrapAdapter(adapter)
+  const scheduledAdapter = scheduler === undefined ? compactedAdapter : new ScheduledCodexAdapter(compactedAdapter, scheduler, store, modelCatalog)
+  ctx.llm.registerAdapter([PROVIDER], scheduledAdapter)
   const currentAgent = () => ctx.get?.('agents')?.currentInitiator?.()
-  const codexSearch = createCodexSearchProvider({
+  const rawCodexSearch = createCodexSearchProvider({
     resolvePreferences: () => readCapabilitySettings(settings.get()),
     getAuth: resolveAuth,
     readCredential: options => store.read(PROVIDER, options),
@@ -335,6 +350,15 @@ export function apply(ctx, config = {}) {
     },
     resolveSessionId: () => currentAgent()?.session.id,
     fetch: (input, init) => network.fetch('search', input, init),
+  })
+  const codexSearch = scheduler === undefined ? rawCodexSearch : Object.freeze({
+    ...rawCodexSearch,
+    search: (request, signal) => runScheduledAccountOperation({
+      scheduler, store, signal,
+      sessionId: currentAgent()?.session.id,
+      model: currentAgent()?.session.requestContext?.()?.model,
+      operation: () => rawCodexSearch.search(request, signal),
+    }),
   })
   ctx.web.registerSearchProvider(codexSearch)
   ctx.web.registerSearchProvider(createCodexAutoSearchProvider({

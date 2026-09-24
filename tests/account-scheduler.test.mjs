@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 import { CodexAccountScheduler, ScheduledCodexAdapter, classifyFailure } from '../src/account-scheduler.js'
 
@@ -18,13 +19,29 @@ function vault(config = { strategy: 'fill-first', sessionAffinity: true }) {
 
 test('classifies quota and overload failures for account failover', () => {
   assert.deepEqual(classifyFailure({ code: 'PI_AI_ERROR', message: 'Encountered invalidated oauth token for user, failing request' }), {
-    retryable: true, reason: 'auth', cooldownMs: 60_000,
+    retryable: true, scope: 'credential', reason: 'auth', cooldownMs: 60_000,
   })
   assert.equal(classifyFailure({ status: 429, message: 'usage_limit_reached resets_in_seconds: 120' }).reason, 'quota')
   assert.equal(classifyFailure({ status: 503, message: 'server_is_overloaded' }).reason, 'transient')
+  assert.equal(classifyFailure({ status: 429, code: 'SERVER_OVERLOADED', message: 'server_is_overloaded' }).scope, 'provider')
   assert.equal(classifyFailure({ status: 400, message: 'bad request' }).retryable, false)
   assert.equal(classifyFailure({ status: 400, message: 'model gpt-6-sol is not available for this account' }).reason, 'model-access')
   assert.equal(classifyFailure({ code: 'MODEL_ACCESS_DENIED' }).retryable, true)
+  assert.equal(classifyFailure({ status: 403, code: 'CONTENT_POLICY_VIOLATION' }).scope, 'request')
+  assert.equal(classifyFailure({ status: 400, code: 'CONTEXT_LENGTH_EXCEEDED' }).retryable, false)
+})
+
+test('DNS, TLS, connect, reset, EOF and idle failures are transport-scoped', () => {
+  for (const code of [
+    'ENOTFOUND', 'EAI_AGAIN', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID',
+    'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'EOF', 'ETIMEDOUT',
+    'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'ERR_STREAM_PREMATURE_CLOSE',
+    'CODEX_STREAM_INCOMPLETE',
+  ]) {
+    const classified = classifyFailure({ code, message: 'fixture' })
+    assert.equal(classified.retryable, true, code)
+    assert.equal(classified.scope, 'transport', code)
+  }
 })
 
 test('model resolution waits for the catalog after a bulk import', async () => {
@@ -50,11 +67,20 @@ test('fill-first keeps one account until it cools down, then advances', async ()
   let now = 10_000
   const scheduler = new CodexAccountScheduler(vault(), { now: () => now })
   assert.equal((await scheduler.choose('s1')).id, 'a')
-  scheduler.markFailure('a', { status: 503, message: 'server_is_overloaded' })
+  scheduler.markFailure('a', { status: 401, message: 'invalidated oauth token' })
   assert.equal((await scheduler.choose('s1')).id, 'b')
   assert.equal((await scheduler.choose('s1')).id, 'b')
-  now += 11_000
+  now += 61_000
   assert.equal((await scheduler.choose('s2')).id, 'b', 'fill-first keeps the healthy current account after cooldown expiry')
+})
+
+test('model quota excludes only that model; a transient provider failure does not cool an account', async () => {
+  const scheduler = new CodexAccountScheduler(vault())
+  scheduler.markFailure('a', { status: 429, code: 'USAGE_LIMIT_REACHED', message: 'usage_limit_reached' }, 'gpt-6-astra')
+  assert.equal((await scheduler.choose('astra', new Set(), 'gpt-6-astra')).id, 'b')
+  assert.equal((await scheduler.choose('sol', new Set(['b']), 'gpt-6-sol')).id, 'a')
+  scheduler.markFailure('a', { status: 503, code: 'SERVER_OVERLOADED', message: 'server_is_overloaded' }, 'gpt-6-sol')
+  assert.equal((await scheduler.choose('sol-2', new Set(['b']), 'gpt-6-sol')).id, 'a')
 })
 
 test('round-robin without affinity rotates accounts', async () => {
@@ -123,6 +149,30 @@ test('fixed account mode ignores normal rotation and never falls through to anot
   assert.deepEqual(selected, ['b'])
   assert.match(chunks.at(-1)?.reason?.failure?.message ?? '', /server_is_overloaded/u)
   assert.equal((await scheduler.choose('another')).id, 'b', 'fixed testing bypasses cross-request cooldown')
+})
+
+test('an account imported while A fails can join the same still-running request', async () => {
+  const accounts = [{ id: 'a', label: 'A' }]
+  const scheduler = new CodexAccountScheduler({
+    async list() { return accounts.map(account => ({ ...account })) },
+    async scheduler() { return { strategy: 'fill-first', sessionAffinity: false } },
+    async activeId() { return 'a' },
+  })
+  const scope = new AsyncLocalStorage()
+  const store = { withAccount: (id, operation) => scope.run(id, operation) }
+  const base = { async *stream() {
+    if (scope.getStore() === 'a') {
+      accounts.push({ id: 'b', label: 'B' })
+      yield { type: 'finish', reason: { kind: 'error', failure: { status: 401, code: 'AUTH_FAILED', message: 'invalidated oauth token' } } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'continued on B' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } }
+  const adapter = new ScheduledCodexAdapter(base, scheduler, store)
+  const chunks = []
+  for await (const chunk of adapter.stream({ model: 'gpt-5.6-luna', messages: [] })) chunks.push(chunk)
+  assert.equal(chunks.find(chunk => chunk.type === 'text-delta')?.text, 'continued on B')
 })
 
 test('scheduled adapter hides a pre-output failure and continues on the next account', async () => {

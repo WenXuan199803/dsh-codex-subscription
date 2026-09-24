@@ -11,7 +11,7 @@ export function createSubscriptionConnection({ resolveMode = () => 'sse', resolv
     async prepare(options = {}) {
       if (resolveMode() !== 'websocket') return { options: { ...options, transport: 'sse' } }
       const proxy = await resolveProxy({ target: new URL('https://chatgpt.com/') })
-      const sessionId = options.sessionId && `dsh-${createHash('sha256').update(JSON.stringify([namespace, options.sessionId, options.apiKey, proxy])).digest('hex').slice(0,56)}`
+      const sessionId = options.sessionId && `dsh-${createHash('sha256').update(JSON.stringify([namespace, options.sessionId, options.apiKey, options.requestedModel, proxy])).digest('hex').slice(0,56)}`
       if (sessionId) sessions.add(sessionId)
       return {
         options: { ...options, sessionId, transport: 'websocket-cached', websocketConnectTimeoutMs: 10000, env: {} },

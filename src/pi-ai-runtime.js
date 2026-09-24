@@ -5,6 +5,7 @@ import { openaiCodexProvider as createOpenAICodexProvider } from '@earendil-work
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { officialCodexRequest } from './codex-request.js'
 import { normalizeTransportEvent } from './transport-failure.js'
+import { guardSseModel } from './model-integrity.js'
 import {
   CONTEXT_MODE_CUSTOM,
   CONTEXT_MODE_EXTENDED,
@@ -67,6 +68,7 @@ export function openaiCodexSubscriptionProvider({
     const onPayload = options.onPayload
     return {
       ...options,
+      requestedModel: model.id,
       ...(textVerbosity === undefined ? {} : { textVerbosity }),
       ...(fast ? { serviceTier: FAST_SERVICE_TIER } : {}),
       ...(metadata?.useResponsesLite === true ? {
@@ -101,7 +103,7 @@ export function openaiCodexSubscriptionProvider({
     const requested = clampModelContext(resolveCustomContextWindow(customContextModelKey(model.id)), maximum, model.contextWindow)
     return { ...model, contextWindow: requested }
   })
-  const networkIterable = (factory, optionsFactory) => {
+  const networkIterable = (factory, optionsFactory, requestedModel) => {
     let iterator
     let ready
     let running
@@ -113,13 +115,20 @@ export function openaiCodexSubscriptionProvider({
           await catalog?.ready?.()
           const options = typeof optionsFactory === 'function' ? optionsFactory() : optionsFactory
           const request = await (connection?.prepare(options) ?? Promise.resolve({ options }))
+          const networkOptions = compaction?.networkOptions(request.network) ?? request.network ?? {}
           running = Promise.resolve().then(() => runNetwork('model', async () => {
             const completed = new Promise(done => { finish = done })
             iterator = factory(compaction?.requestOptions(request.options) ?? request.options)[Symbol.asyncIterator]()
             const scoped = AsyncLocalStorage.snapshot()
             resolve({ request, scoped })
             await completed
-          }, compaction?.networkOptions(request.network) ?? request.network)).catch(reject)
+          }, {
+            ...networkOptions,
+            expectedModel: requestedModel,
+            transformResponse(response, target) {
+              return guardSseModel(networkOptions.transformResponse?.(response, target) ?? response, target, requestedModel)
+            },
+          })).catch(reject)
         }).catch(reject)
       })
       return ready
@@ -151,8 +160,8 @@ export function openaiCodexSubscriptionProvider({
     ...provider,
     auth: Object.freeze({ ...provider.auth, apiKey: requestToken }),
     getModels,
-    stream: (model, context, options) => networkIterable(prepared => provider.stream(model, context, prepared), () => withPreferences(model, options)),
-    streamSimple: (model, context, options) => networkIterable(prepared => provider.streamSimple(model, context, prepared), () => withPreferences(model, options)),
+    stream: (model, context, options) => networkIterable(prepared => provider.stream(model, context, prepared), () => withPreferences(model, options), model.id),
+    streamSimple: (model, context, options) => networkIterable(prepared => provider.streamSimple(model, context, prepared), () => withPreferences(model, options), model.id),
   })
 }
 

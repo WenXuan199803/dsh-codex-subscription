@@ -1,9 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { createSubscriptionConnection } from '../src/subscription-connection.js'
 import { openaiCodexSubscriptionProvider } from '../src/pi-ai-runtime.js'
 import { createCodexNetworkTransport, withCodexNetwork } from '../src/oauth-network.js'
+import { CodexAccountScheduler, ScheduledCodexAdapter } from '../src/account-scheduler.js'
 
 test('SSE leaves the WebSocket constructor untouched; unrelated WebSocket subclasses retain their prototype', async () => {
   const original = globalThis.WebSocket
@@ -21,6 +24,120 @@ test('SSE leaves the WebSocket constructor untouched; unrelated WebSocket subcla
   } finally { globalThis.WebSocket = original }
 })
 
+test('Codex WebSocket suppresses a wrong-model frame before pi-ai sees it', async () => {
+  const original = globalThis.WebSocket
+  class FixtureSocket extends EventTarget {
+    closed
+    close(code, reason) { this.closed = { code, reason } }
+  }
+  globalThis.WebSocket = FixtureSocket
+  const socket = new FixtureSocket(), seen = []
+  try {
+    await withCodexNetwork(async () => {
+      const guarded = new globalThis.WebSocket('wss://chatgpt.com/backend-api/codex/responses')
+      guarded.addEventListener('message', event => seen.push(event.data))
+      guarded.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.created', response: { model: 'gpt-5.6-sol' } }) }))
+      guarded.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.output_text.delta', delta: 'wrong' }) }))
+    }, { websocket: true, expectedModel: 'gpt-6-astra', createWebSocket: () => socket })
+    assert.deepEqual(socket.closed, { code: 1011, reason: 'model_mismatch' })
+    assert.deepEqual(seen, [])
+  } finally { globalThis.WebSocket = original }
+})
+
+test('WebSocket in-stream capacity frame relays through the scheduled DSH adapter', async () => {
+  const original = globalThis.WebSocket
+  const scope = new AsyncLocalStorage(), requests = []
+  const store = { withAccount: (id, operation) => scope.run(id, operation) }
+  class ScriptSocket extends EventTarget {
+    readyState = 0
+    constructor(account) { super(); this.account = account; queueMicrotask(() => { this.readyState = 1; this.dispatchEvent(new Event('open')) }) }
+    send(value) {
+      const body = JSON.parse(value)
+      requests.push({ account: this.account, body })
+      const emit = frame => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(frame) }))
+      queueMicrotask(() => {
+        emit({ type: 'response.created', response: { id: `response-${this.account}`, model: 'gpt-5.6-luna' } })
+        if (this.account === 'a') {
+          emit({ type: 'response.failed', response: { id: 'response-a', status: 'failed', error: { code: 'model_at_capacity', message: 'Selected model is at capacity' } } })
+          return
+        }
+        emit({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'message-b', role: 'assistant', content: [] } })
+        emit({ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: 'websocket-b' })
+        emit({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'message-b', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'websocket-b', annotations: [] }] } })
+        emit({ type: 'response.completed', response: { id: 'response-b', model: 'gpt-5.6-luna', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })
+      })
+    }
+    close(code = 1000, reason = '') { if (this.readyState === 3) return; this.readyState = 3; const event = new Event('close'); Object.assign(event, { code, reason, wasClean: code === 1000 }); this.dispatchEvent(event) }
+  }
+  globalThis.WebSocket = ScriptSocket
+  const connection = createSubscriptionConnection({ resolveMode: () => 'websocket', resolveProxy: async () => undefined })
+  try {
+    const network = createCodexNetworkTransport({ createWebSocket: () => new ScriptSocket(scope.getStore()), platform: 'linux', env: { NO_PROXY: '*' } })
+    const provider = openaiCodexSubscriptionProvider({ connection, runNetwork: network.run })
+    const profiles = new Map([['openai-codex', { provider: 'openai-codex', displayName: 'Fixture', piProvider: provider, configuredMaxTokens: new Map(), modelErrors: new Map(), transport: 'sse', streamIdleTimeoutMs: 3000 }]])
+    const token = account => `e30.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: account } })).toString('base64url')}.fixture`
+    const base = new PiAiAdapter({ profiles: () => profiles, resolveApiKey: async () => token(scope.getStore()) })
+    const vault = { async list() { return [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }, async scheduler() { return { strategy: 'fill-first', sessionAffinity: true } }, async activeId() { return 'a' } }
+    const scheduler = new CodexAccountScheduler(vault)
+    const adapter = new ScheduledCodexAdapter(base, scheduler, store)
+    const chunks = []
+    for await (const chunk of adapter.stream({ provider: 'openai-codex', model: 'gpt-5.6-luna', sessionId: 'ws-relay', messages: [{ role: 'user', content: [{ type: 'text', text: 'same task' }] }], signal: AbortSignal.timeout(3000) })) chunks.push(chunk)
+    assert.deepEqual(requests.map(item => item.account), ['a', 'b'])
+    assert.notEqual(requests[0].body.prompt_cache_key, requests[1].body.prompt_cache_key)
+    const { prompt_cache_key: _leftPrivate, ...leftTask } = requests[0].body
+    const { prompt_cache_key: _rightPrivate, ...rightTask } = requests[1].body
+    assert.deepEqual(leftTask, rightTask)
+    assert.deepEqual(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text), ['websocket-b'])
+  } finally { connection.dispose(); globalThis.WebSocket = original }
+})
+
+test('WebSocket previous_response continuation stays on A; B starts with full history', async () => {
+  const original = globalThis.WebSocket
+  const wires = []
+  let currentAccount = 'a', sequence = 0
+  class ScriptSocket extends EventTarget {
+    readyState = 0
+    constructor(account) { super(); this.account = account; queueMicrotask(() => { this.readyState = 1; this.dispatchEvent(new Event('open')) }) }
+    send(raw) {
+      const body = JSON.parse(raw), id = `response-${++sequence}`
+      wires.push({ account: this.account, body })
+      const emit = frame => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(frame) }))
+      queueMicrotask(() => {
+        emit({ type: 'response.created', response: { id, model: 'gpt-5.6-luna' } })
+        emit({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: `msg-${sequence}`, role: 'assistant', content: [] } })
+        emit({ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: `answer-${sequence}` })
+        emit({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: `msg-${sequence}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: `answer-${sequence}`, annotations: [] }] } })
+        emit({ type: 'response.completed', response: { id, model: 'gpt-5.6-luna', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })
+      })
+    }
+    close(code = 1000) { if (this.readyState === 3) return; this.readyState = 3; const event = new Event('close'); Object.assign(event, { code, reason: '', wasClean: true }); this.dispatchEvent(event) }
+  }
+  globalThis.WebSocket = ScriptSocket
+  const connection = createSubscriptionConnection({ resolveMode: () => 'websocket', resolveProxy: async () => undefined })
+  const network = createCodexNetworkTransport({ createWebSocket: () => new ScriptSocket(currentAccount), platform: 'linux', env: { NO_PROXY: '*' } })
+  const provider = openaiCodexSubscriptionProvider({ connection, runNetwork: network.run })
+  const model = provider.getModels().find(item => item.id === 'gpt-5.6-luna')
+  const token = account => `e30.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: account } })).toString('base64url')}.fixture`
+  const user = text => ({ role: 'user', content: text, timestamp: 1 })
+  const run = async (account, messages) => {
+    currentAccount = account
+    let done
+    for await (const event of provider.streamSimple(model, { messages }, { apiKey: token(account), sessionId: 'shared-dsh-session', signal: AbortSignal.timeout(3000) })) if (event.type === 'done') done = event.message
+    assert.ok(done)
+    return done
+  }
+  try {
+    const first = await run('a', [user('first')])
+    const history = [user('first'), first, user('second')]
+    await run('a', history)
+    await run('b', history)
+    assert.deepEqual(wires.map(item => item.account), ['a', 'a', 'b'])
+    assert.ok(wires[1].body.previous_response_id, 'A reused its private continuation')
+    assert.equal(wires[2].body.previous_response_id, undefined)
+    assert.ok(wires[2].body.input.length > wires[1].body.input.length)
+  } finally { connection.dispose(); globalThis.WebSocket = original }
+})
+
 test('experimental connections keep default SSE and isolate session caches across credentials, proxies and plugin instances', async () => {
   let mode = 'sse', proxy
   const policy = createSubscriptionConnection({ resolveMode: () => mode, resolveProxy: async () => proxy })
@@ -33,6 +150,7 @@ test('experimental connections keep default SSE and isolate session caches acros
     assert.equal(first.options.sessionId, (await policy.prepare(input)).options.sessionId)
     assert.ok(!first.options.sessionId.includes(input.apiKey))
     assert.notEqual(first.options.sessionId, (await policy.prepare({ ...input, apiKey: 'token-two' })).options.sessionId)
+    assert.notEqual(first.options.sessionId, (await policy.prepare({ ...input, requestedModel: 'gpt-6-astra' })).options.sessionId)
     proxy = 'http://localhost:1001'
     assert.notEqual(first.options.sessionId, (await policy.prepare(input)).options.sessionId)
     const second = createSubscriptionConnection({ resolveMode: () => mode, resolveProxy: async () => undefined })

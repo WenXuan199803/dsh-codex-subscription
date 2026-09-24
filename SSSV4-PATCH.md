@@ -21,3 +21,5 @@ Explicitly excluded from the production fork:
 
 CODEX-DSH is an acceptance harness only. Its standalone launcher fixes must not be copied into this plugin.
 - Fixed-account diagnostic override: select one enabled vault account and force every conversation through it; no rotation or cross-account failover occurs while fixed, and disabling/removing that account clears the override.
+
+Reliability audit in `docs/sssv4-multi-account-reliability-2026-09-24.md` adds a product-entry fake-upstream harness and bounded account relay across HTTP/SSE/WebSocket, account-scoped opaque replay, response-model checks, Codex search/image routing, pre-start native subagent account selection, and safe read-only DSH tool retries. Mid-run native Codex subagent continuation and arbitrary uncertain side-effect reconciliation remain explicit limits.

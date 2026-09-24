@@ -63,7 +63,7 @@ async function readJsonWithin(response, maximumBytes) {
   if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
     throw new Error('Codex image response exceeds the image size limit')
   }
-  if (response.body === null) throw new Error('Codex returned an unreadable image response')
+  if (response.body === null) throw Object.assign(new Error('Codex returned an unreadable image response'), { code: 'CODEX_IMAGE_INCOMPLETE' })
   const reader = response.body.getReader()
   const chunks = []
   let bytes = 0
@@ -81,7 +81,7 @@ async function readJsonWithin(response, maximumBytes) {
   try {
     return JSON.parse(body)
   } catch {
-    throw new Error('Codex returned an unreadable image response')
+    throw Object.assign(new Error('Codex returned an unreadable image response'), { code: 'CODEX_IMAGE_INCOMPLETE' })
   }
 }
 
@@ -263,7 +263,7 @@ function imageOutputSchema() {
 function responseMetadata(value) {
   const data = Array.isArray(value?.data) ? value.data[0] : undefined
   const encoded = record(data) ? data.b64_json : undefined
-  if (typeof encoded !== 'string') throw new Error('Codex returned no image data')
+  if (typeof encoded !== 'string') throw Object.assign(new Error('Codex returned no image data'), { code: 'CODEX_IMAGE_INCOMPLETE' })
   return {
     encoded,
     background: nonEmpty(value.background),
@@ -418,6 +418,11 @@ export function createCodexImageTool(options) {
         encodedLimit(maximumBytes) + RESPONSE_ENVELOPE_BYTES,
       )
       const metadata = responseMetadata(value)
+      if (metadata.reportedModel !== undefined && metadata.reportedModel !== resolveImageModel(args.model)) {
+        throw Object.assign(new Error(`Upstream model mismatch: requested ${resolveImageModel(args.model)}, received ${metadata.reportedModel}`), {
+          code: 'CODEX_MODEL_MISMATCH',
+        })
+      }
       const data = decodeCodexPng(metadata.encoded, maximumBytes)
       const sessionId = exec.agent?.id
       if (sessionId === undefined) throw new Error('Codex image generation requires a session-owned tool call')

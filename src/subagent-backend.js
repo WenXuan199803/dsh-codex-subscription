@@ -1,5 +1,6 @@
 import { mkdir } from 'node:fs/promises'
 import { authenticatedSubagentChild, createSubagentTokens } from './subagent-auth.js'
+import { runScheduledAccountOperation } from './account-scheduler.js'
 import { resolveCodexOAuthProxy } from './oauth-network.js'
 
 export const SUBAGENT_BACKEND_FIELD = 'subagentBackend'
@@ -27,7 +28,7 @@ export function subagentThreadPolicy(parent, policy, requested = {}) {
 }
 
 /** Reuse the official DSH process/turn provider; keep only subscription auth here. */
-export function createSubscriptionSubagent({ ctx, nativeHome, resolveAuth, store, refresh, loadRuntime, maintenance = () => false }) {
+export function createSubscriptionSubagent({ ctx, nativeHome, resolveAuth, store, scheduler, refresh, loadRuntime, maintenance = () => false }) {
   let runtime
   const load = () => runtime ??= loadRuntime().catch(error => { runtime = undefined; throw error })
   const active = new Set()
@@ -45,7 +46,21 @@ export function createSubscriptionSubagent({ ctx, nativeHome, resolveAuth, store
       let run
       try {
         const thread = subagentThreadPolicy(request.parent, ctx.sandboxPolicy.resolve({ session: request.parent.session }), request.agentOptions)
-        const getTokens = await createSubagentTokens({ resolveAuth, store, refresh, signal })
+        const getTokens = scheduler === undefined
+          ? await createSubagentTokens({ resolveAuth, store, refresh, signal })
+          : await runScheduledAccountOperation({
+            scheduler, store, signal, model: thread.model, sessionId: request.parent.session.id,
+            operation: account => {
+              const pinnedStore = {
+                read: (...args) => store.withAccount(account.id, () => store.read(...args)),
+                modify: (...args) => store.withAccount(account.id, () => store.modify(...args)),
+              }
+              return createSubagentTokens({
+                resolveAuth: () => store.withAccount(account.id, resolveAuth),
+                store: pinnedStore, refresh, signal,
+              })
+            },
+          })
         const { official, Transport } = await load()
         const proxy = await resolveCodexOAuthProxy({ target: new URL('https://chatgpt.com/') })
         signal.throwIfAborted()

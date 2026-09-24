@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import WebSocket from 'ws'
+import { guardWebSocketModel } from './model-integrity.js'
 
 const execFileAsync = promisify(execFile)
 const CODEX_AUTH_HOST = 'auth.openai.com'
@@ -177,7 +178,9 @@ export async function withCodexNetwork(run, options = {}) {
         const url = new URL(String(args[0]))
         if (!scope?.options.websocket || url.protocol !== 'wss:' || url.hostname !== CODEX_SUBSCRIPTION_HOST) return Reflect.construct(target, args, newTarget)
         const proxy = scope.options.websocketProxy
-        return new WebSocket(args[0], { ...args[1], ...(proxy ? { agent: new HttpsProxyAgent(proxy) } : {}) })
+        const socket = scope.options.createWebSocket?.(args[0], args[1])
+          ?? new WebSocket(args[0], { ...args[1], ...(proxy ? { agent: new HttpsProxyAgent(proxy) } : {}) })
+        return guardWebSocketModel(socket, scope.options.expectedModel)
       },
     })
     globalThis.WebSocket = scopedWebSocket
