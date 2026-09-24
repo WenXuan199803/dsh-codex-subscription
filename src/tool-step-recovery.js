@@ -52,6 +52,20 @@ function wait(ms, signal) {
   })
 }
 
+function runtimeScheduler(tools) {
+  const direct = tools?.[TOOL_RUNTIME_SCHEDULER]
+  if (typeof direct?.dispatch === 'function') return direct
+  if (!tools) return undefined
+  // DSH and a packaged plugin can load different physical copies of
+  // dsh-tools. Its internal Symbol is then not referentially equal, although
+  // the one scheduler field on the ToolRuntime retains the same description.
+  const candidates = Object.getOwnPropertySymbols(tools)
+    .filter(key => key.description === TOOL_RUNTIME_SCHEDULER.description)
+    .map(key => tools[key])
+    .filter(value => typeof value?.dispatch === 'function')
+  return candidates.length === 1 ? candidates[0] : undefined
+}
+
 /** Retry only incomplete, read-only tool attempts before DSH commits a result. */
 export async function recoverToolStep(exec, next, retryDispatch, onRetry = () => {}) {
   if (exec.agent?.session?.requestContext?.()?.provider !== 'openai-codex' || !readOnlyTool(exec)) return next()
@@ -77,7 +91,7 @@ export function registerToolStepRecovery(ctx) {
   const retrying = new WeakSet()
   return ctx.on?.('tools/execute', (exec, next) => {
     if (retrying.has(exec)) return next()
-    const scheduler = ctx.tools?.[TOOL_RUNTIME_SCHEDULER]
+    const scheduler = runtimeScheduler(ctx.tools)
     const dispatch = typeof scheduler?.dispatch === 'function' ? async () => {
       retrying.add(exec)
       try { return (await scheduler.dispatch(exec)).result } finally { retrying.delete(exec) }

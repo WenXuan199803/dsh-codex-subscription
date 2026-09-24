@@ -733,6 +733,13 @@ test('DSH ToolRuntime commits only completed read-only tool results after interr
   const ctx = new Context()
   ctx.systemPrompt = { tools() {} }
   const runtime = new ToolRuntime(ctx)
+  // An installed plugin and the host can resolve separate dsh-tools module
+  // copies. Their private Symbols share a description but not identity.
+  const hostSchedulerKey = Object.getOwnPropertySymbols(runtime).find(key => key.description === '@deepseek-ai/dsh-tools.scheduler')
+  assert.ok(hostSchedulerKey)
+  const hostScheduler = runtime[hostSchedulerKey]
+  delete runtime[hostSchedulerKey]
+  runtime[Symbol('@deepseek-ai/dsh-tools.scheduler')] = hostScheduler
   product.ctx.tools = runtime
   for (const hook of product.toolHooks) ctx.on('tools/execute', hook)
   const audits = new Map()
